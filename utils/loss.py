@@ -5,7 +5,8 @@ from tensorflow.keras.layers import *
 from tensorflow.keras.models import *
 from tensorflow.keras.applications import VGG16
 
-
+# funzione che restituisce un modello di rete neurale che prende in input un'immagine e restituisce 
+# le feature maps dei layer specificati
 def perceptual_backbone(feature_layers, input_shape):
 
     def backbone(x):
@@ -96,6 +97,21 @@ def fs_reconstruction_loss_l1(y_true, y_pred, flags):
     reconstruction_loss = tf.clip_by_value(reconstruction_loss, clip_value_min=0, clip_value_max=100)
 
     return reconstruction_loss / 2
+
+
+@tf.function
+def occlusion_consistency_loss(generated, source_occluded, source_mask):
+    """L1 fidelity inside the known source-occluder region."""
+    source_mask = tf.cast(source_mask, tf.float32)
+    pixel_error = tf.abs(
+        tf.cast(generated, tf.float32) * source_mask -
+        tf.cast(source_occluded, tf.float32) * source_mask
+    )
+    error_per_example = tf.reduce_sum(pixel_error, axis=[1, 2, 3])
+    pixels_per_example = tf.reduce_sum(source_mask, axis=[1, 2, 3]) * 3.0
+    loss_per_example = error_per_example / (pixels_per_example + 1e-6)
+    valid = tf.cast(pixels_per_example > 0.0, tf.float32)
+    return tf.reduce_sum(loss_per_example * valid) / (tf.reduce_sum(valid) + 1e-6)
 
 
 def perceptual_similarity_backbone(feature_layers, path):

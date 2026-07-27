@@ -1,6 +1,15 @@
 from retinaface.anchor import decode_tf, prior_box_tf
 import tensorflow as tf
 
+'''
+ops.py è il modulo che prende le uscite grezze del detector RetinaFace e le trasforma in rilevamenti finali pronti per l’uso. 
+In pratica riceve le predizioni di bounding box, landmark e probabilità dal modello, costruisce le prior box 
+in base alla dimensione dell’immagine, decodifica le regressioni rispetto a queste ancore e applica una non-max suppression 
+per eliminare i riquadri ridondanti. Questo significa che ops.py fa da ponte tra il formato interno del modello e il risultato 
+finale: non crea né addestra il detector, ma prende le sue uscite e le converte in coordinate di box e landmark pulite, 
+filtrate in modo che restino solo i volti più affidabili.
+'''
+
 
 def extract_detections(bbox_regressions, landm_regressions, classifications, image_sizes, iou_th=0.4, score_th=0.02):
     min_sizes = [[16, 32], [64, 128], [256, 512]]

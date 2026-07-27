@@ -16,13 +16,33 @@ from datetime import datetime
 from dataset.tf_records_parser import get_tf_dataset
 from networks.generator import get_generator
 from networks.discriminator import get_discriminator
-from utils.loss import perceptual_loss_flagged, perceptual_similarity_loss, fs_reconstruction_loss_l1
+from utils.loss import (perceptual_loss_flagged, perceptual_similarity_loss,
+                        fs_reconstruction_loss_l1, occlusion_consistency_loss)
 from utils.utils import save_model_internal, load_model_internal, save_training_meta, load_training_meta, log_info
+
+
+def build_occlusion_condition(source, source_mask):
+    """Build the SOA condition from an already-occluded face and its mask."""
+    source = tf.cast(source, tf.float32)
+    source_mask = tf.cast(source_mask, tf.float32)
+    return tf.concat(
+        [source_mask, source * source_mask], axis=-1
+    )
 
 
 def run(opt):
     gpus = tf.config.experimental.list_physical_devices('GPU')
-    tf.config.set_visible_devices(gpus[opt.device_id], 'GPU')
+    if gpus:
+        tf.config.set_visible_devices(gpus[opt.device_id], 'GPU')
+    if opt.occlusion_data_dir is None:
+        raise ValueError(
+            '--occlusion_data_dir is required for SOA training and must '
+            'point to the extracted dataset_finale directory.'
+        )
+    if not 0.0 < opt.occlusion_train_fraction < 1.0:
+        raise ValueError(
+            '--occlusion_train_fraction must be between 0 and 1.'
+        )
     lr = opt.lr
 
     # evaluation models
@@ -47,6 +67,7 @@ def run(opt):
     i_lambda = opt.i_lambda
     c_lambda = opt.c_lambda
     ifsr_lambda = opt.ifsr_lambda
+    occ_lambda = opt.occ_lambda
 
     # init
     ifsr_loss_function = perceptual_similarity_loss(ifsr_blocks, ifsr_weight, ifsr_margin, opt.arcface_path)
@@ -69,6 +90,12 @@ def run(opt):
         print("[*] loading checkpoint " + str(opt.load) + "...")
         G = load_model_internal(opt.chkp_dir + opt.log_name + "/gen/", "gen", opt.load)
         D = load_model_internal(opt.chkp_dir + opt.log_name + "/dis/", "dis", opt.load)
+
+        if len(G.inputs) != 3:
+            raise ValueError(
+                'The checkpoint is not a FaceDancer-SOA generator with '
+                'three inputs.'
+            )
 
         checkpoint_state = load_training_meta(opt.chkp_dir + opt.log_name + "/state/", opt.load)
 
@@ -103,11 +130,13 @@ def run(opt):
     d_optim = tf.keras.optimizers.Adam(learning_rate=lr_schedule, beta_1=0, beta_2=0.99)
 
     @tf.function
-    def test_step(target, source):
+    def test_step(target, source, source_mask):
+
+        source_condition = build_occlusion_condition(source, source_mask)
 
         source_z = ArcFace(tf.image.resize((source + 1) / 2, [112, 112]))
 
-        change = G([target, source_z])
+        change = G([target, source_z, source_condition])
 
         target_exp = expface_eval(tf.image.resize((target + 1) / 2, [224, 224]))[0]
         change_exp = expface_eval(tf.image.resize((change + 1) / 2, [224, 224]))[0]
@@ -119,7 +148,7 @@ def run(opt):
         return results
 
     @tf.function
-    def train_step(target, source, flags):
+    def train_step(target, source, source_mask, flags):
 
         # deterministic seeding for deterministic augmentation
         target_seed = tf.random.uniform(shape=[2], minval=0, maxval=100000, dtype=tf.int32)
@@ -134,13 +163,16 @@ def run(opt):
         source = tf.image.stateless_random_contrast(source, 0.9, 1.1, seed=source_seed)
         source = tf.image.stateless_random_saturation(source, 0.9, 1.1, seed=source_seed)
 
+        source_condition = build_occlusion_condition(source, source_mask)
+
         with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-            with gen_tape.stop_recording() and disc_tape.stop_recording():
-                source_z = ArcFace(tf.image.resize((source + 1) / 2, [112, 112]))
-                target_z = ArcFace(tf.image.resize((target + 1) / 2, [112, 112]))
+            with gen_tape.stop_recording():
+                with disc_tape.stop_recording():
+                    source_z = ArcFace(tf.image.resize((source + 1) / 2, [112, 112]))
+                    target_z = ArcFace(tf.image.resize((target + 1) / 2, [112, 112]))
 
             # generate
-            change = G([target, source_z], training=True)
+            change = G([target, source_z, source_condition], training=True)
 
             # discriminate
             real_output = D(source, training=True)
@@ -162,10 +194,10 @@ def run(opt):
             d_loss += gp_loss
 
             # reconstruction loss
-            r_loss = fs_reconstruction_loss_l1(target, change, flags)
+            r_loss = fs_reconstruction_loss_l1(source, change, flags)
             r_loss = tf.clip_by_value(r_loss, clip_value_min=0, clip_value_max=5)
 
-            p_loss = percept_loss(target, change, flags)
+            p_loss = percept_loss(source, change, flags)
 
             # identity loss
             change_z = ArcFace(tf.image.resize((change + 1) / 2, [112, 112]))
@@ -173,8 +205,13 @@ def run(opt):
                                                                     tf.cast(change_z, tf.float32)))
 
             # cycle loss
-            cycled = G([change, target_z], training=True)
+            zero_condition = tf.zeros_like(source_condition)
+            cycled = G([change, target_z, zero_condition], training=True)
             c_loss = tf.reduce_mean(tf.abs(cycled - target))
+
+            occ_loss = occlusion_consistency_loss(
+                change, source, source_mask
+            )
 
             # interpreted feature similarity regularization
             ifsr_loss = ifsr_loss_function(tf.image.resize((target + 1) / 2, [112, 112]),
@@ -186,7 +223,8 @@ def run(opt):
                          i_lambda * i_loss + \
                          c_lambda * c_loss + \
                          p_lambda * p_loss + \
-                         ifsr_lambda * ifsr_loss
+                         ifsr_lambda * ifsr_loss + \
+                         occ_lambda * occ_loss
 
             # Optimization step
             gradients_of_generator = gen_tape.gradient(total_loss, G.trainable_variables)
@@ -202,6 +240,7 @@ def run(opt):
                    'generator/c_loss': c_lambda * c_loss,
                    'generator/p_loss': p_lambda * p_loss,
                    'generator/isfr_loss': ifsr_lambda * ifsr_loss,
+                   'generator/occ_loss': occ_lambda * occ_loss,
                    'generator/total_loss': total_loss,
                    'discriminator/d_loss': d_loss,
                    'discriminator/d_loss_f': d_loss_f,
@@ -210,15 +249,15 @@ def run(opt):
 
         return results
 
-    def log_image(sw, target, source, iteration, category='validation/'):
+    def log_image(sw, target, source, source_mask, iteration, category='validation/'):
+
+        source_condition = build_occlusion_condition(source, source_mask)
 
         # extract id information
         source_z = ArcFace(tf.image.resize((source + 1) / 2, [112, 112]))
-        target_z = ArcFace(tf.image.resize((target + 1) / 2, [112, 112]))
-
         # generate face swap and reconstruction
-        change = (G([target, source_z]) + 1) / 2
-        change_s = (G([target, target_z]) + 1) / 2
+        change = (G([target, source_z, source_condition]) + 1) / 2
+        change_s = (G([source, source_z, source_condition]) + 1) / 2
 
         target = (target + 1) / 2
         source = (source + 1) / 2
@@ -245,19 +284,33 @@ def run(opt):
         summary_writer = tf.summary.create_file_writer(opt.log_dir + opt.log_name)
 
     iteration_num = 500000
-    eval_dataset = iter(get_tf_dataset(opt.eval_dir, opt.image_size, 10, repeat=True))
+    eval_dataset = iter(get_tf_dataset(
+        opt.eval_dir, opt.image_size, 10, repeat=True,
+        occlusion_data_dir=opt.occlusion_data_dir,
+        occlusion_split='validation',
+        occlusion_train_fraction=opt.occlusion_train_fraction,
+        occlusion_split_seed=opt.occlusion_split_seed
+    ))
 
     # begin/resume training
     for epoch in range(epoch_s, opt.num_epochs):
 
-        train_dataset = iter(get_tf_dataset(opt.data_dir, opt.image_size, opt.batch_size))
+        train_dataset = iter(get_tf_dataset(
+            opt.data_dir, opt.image_size, opt.batch_size,
+            occlusion_data_dir=opt.occlusion_data_dir,
+            occlusion_split='train',
+            occlusion_train_fraction=opt.occlusion_train_fraction,
+            occlusion_split_seed=opt.occlusion_split_seed
+        ))
 
         for i in tqdm(range(iteration_num), total=iteration_num):
             try:
                 data = train_dataset.__next__()
-                target_batch, source_batch = data
+                target_batch, source_data = data
+                source_batch, source_mask_batch = source_data
                 target_batch = target_batch.numpy()
                 source_batch = source_batch.numpy()
+                source_mask_batch = source_mask_batch.numpy()
 
                 # randomly choose data points in batch to have target = source
                 source_same = np.random.choice([0, 1], opt.batch_size, p=[1 - opt.same_ratio, opt.same_ratio])
@@ -270,16 +323,20 @@ def run(opt):
                 for i in range(opt.batch_size):
                     if source_same[i] == 1:
                         source_batch[i] = target_batch[i]
+                        source_mask_batch[i] = 0.0
 
                 # optimize
-                losses = train_step(target_batch, source_batch, source_same)
+                losses = train_step(
+                    target_batch, source_batch, source_mask_batch, source_same
+                )
 
                 # logging
                 if iteration % 100 == 0:
                     log_info(summary_writer, losses, iteration)
 
                 if (iteration % 100 == 0 and iteration < 10000) or (iteration % 1000 == 0):
-                    log_image(summary_writer, target_batch, source_batch, iteration, 'training/')
+                    log_image(summary_writer, target_batch, source_batch,
+                              source_mask_batch, iteration, 'training/')
 
                 # checkpoint
                 if iteration % 1000 == 0:
@@ -295,28 +352,32 @@ def run(opt):
 
                 # soft evaluation
                 if iteration % 100 == 0:
-                    (e_target, e_source) = eval_dataset.__next__()
-                    e_losses = test_step(e_target, e_source)
+                    e_target, e_source_data = eval_dataset.__next__()
+                    e_source, e_source_mask = e_source_data
+                    e_losses = test_step(e_target, e_source, e_source_mask)
 
                     log_info(summary_writer, e_losses, iteration)
 
                     if (iteration % 100 == 0 and iteration < 10000) or (iteration % 1000 == 0):
-                        (v_t_v, v_s_v) = eval_dataset.__next__()
-                        log_image(summary_writer, v_t_v, v_s_v, iteration)
+                        v_t_v, v_source_data = eval_dataset.__next__()
+                        v_s_v, v_source_mask = v_source_data
+                        log_image(summary_writer, v_t_v, v_s_v,
+                                  v_source_mask, iteration)
 
                 iteration += 1
             except Exception as e:
                 print(e)
+                raise
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--data_dir', type=str,
-                        default="C:/path/to/tfrecords/train/vgg_ls3dx4_train_*-of-*.records",
+                        default="./dataset/tfrecords/celeba_hq_train_*-of-*.records",
                         help='path to train data set shards')
     parser.add_argument('--eval_dir', type=str,
-                        default="C:/path/to/tfrecords/validation/vgg_ls3dx4_validation_*-of-*.records",
+                        default="./dataset/tfrecords/celeba_hq_validation_*-of-*.records",
                         help='path to validation data set shards')
     parser.add_argument('--arcface_path', type=str,
                         default="../arcface_model/arcface/ArcFace-Res50.h5",
@@ -360,6 +421,8 @@ if __name__ == '__main__':
                         help='cycle loss weighting')
     parser.add_argument('--ifsr_lambda', type=float, default=1,
                         help='perceptual similarity loss weighting')
+    parser.add_argument('--occ_lambda', type=float, default=5,
+                        help='source occlusion consistency loss weighting')
 
     parser.add_argument('--ifsr_scale', type=float, default=1.2,
                         help='perceptual similarity margin scaling.'
@@ -407,8 +470,16 @@ if __name__ == '__main__':
     parser.add_argument('--mapping_size', type=int, default=512,
                         help="size of the fully connected layers in the mapping network")
     parser.add_argument('--up_types', type=list,
-                        default=['no_skip', 'no_skip', 'affa', 'affa', 'affa', 'concat'],
+                        default=['affa_soa', 'affa_soa', 'affa_soa',
+                                 'affa_soa', 'affa_soa', 'affa_soa'],
                         help='what kind of decoding blocks to use')
+
+    parser.add_argument('--occlusion_data_dir', type=str, default=None,
+                        help='path to dataset_finale with images, hand_masks and metadata.csv')
+    parser.add_argument('--occlusion_train_fraction', type=float, default=0.7,
+                        help='fraction of occluded samples used for training')
+    parser.add_argument('--occlusion_split_seed', type=int, default=42,
+                        help='seed for the deterministic train/validation split')
 
     # data and devices
     parser.add_argument('--shuffle', type=bool, default=True,

@@ -6,11 +6,8 @@ import scipy.special as spspec
 import tensorflow as tf
 import tensorflow.keras.backend as K
 from tensorflow.keras import constraints, initializers, regularizers
-from tensorflow.keras.layers import (Activation, Add, BatchNormalization,
-                                     Concatenate, Conv2D, Dense, Embedding,
-                                     Flatten, Input, InputSpec, Layer,
-                                     LeakyReLU, MaxPooling2D, Multiply, ReLU,
-                                     Reshape, UpSampling2D)
+from tensorflow.keras.layers import (Activation, Add, BatchNormalization, Concatenate, Conv2D, Dense, Embedding,
+                                     Flatten, Input, InputSpec, Layer, LeakyReLU, MaxPooling2D, Multiply, ReLU, Reshape, UpSampling2D)
 from tensorflow.keras.models import Model
 from tensorflow.python.keras.utils import conv_utils
 
@@ -204,6 +201,23 @@ class AdaptiveAttention(Layer):
     def get_config(self):
         base_config = super(AdaptiveAttention, self).get_config()
         return base_config
+
+
+class AdaptiveAttentionSOA(Layer):
+    """Three-way, per-pixel fusion for target, identity and occluder features."""
+
+    def __init__(self, **kwargs):
+        super(AdaptiveAttentionSOA, self).__init__(**kwargs)
+
+    def call(self, inputs):
+        gates, attributes, identity, occluder = inputs
+        m_attributes, m_identity, m_occluder = tf.split(gates, 3, axis=-1)
+        return (m_attributes * attributes +
+                m_identity * identity +
+                m_occluder * occluder)
+
+    def get_config(self):
+        return super(AdaptiveAttentionSOA, self).get_config()
 
 
 def aad_block(inputs, c_out):

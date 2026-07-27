@@ -5,7 +5,7 @@ import math
 
 import tensorflow as tf
 from tensorflow.keras.models import model_from_json
-from networks.layers import AdaIN, AdaptiveAttention
+from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
 
 from skimage import transform as trans
 from scipy.signal import convolve2d
@@ -26,7 +26,14 @@ def load_model_internal(path, name, num):
     with open(path + name + '.json', 'r') as json_file:
         model_dict = json_file.read()
 
-    mod = model_from_json(model_dict, custom_objects={'AdaIN': AdaIN, 'AdaptiveAttention': AdaptiveAttention})
+    mod = model_from_json(
+        model_dict,
+        custom_objects={
+            'AdaIN': AdaIN,
+            'AdaptiveAttention': AdaptiveAttention,
+            'AdaptiveAttentionSOA': AdaptiveAttentionSOA
+        }
+    )
     mod.load_weights(path + name + '_' + str(num) + '.h5')
 
     return mod

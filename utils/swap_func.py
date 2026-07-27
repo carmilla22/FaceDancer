@@ -12,14 +12,16 @@ from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import subprocess
 
+from utils.hand_occlusion import build_canonical_condition
 from utils.utils import (estimate_norm, get_lm, inverse_estimate_norm,
                          norm_crop, transform_landmark_points)
 
 
-def run_inference(opt, source, target, RetinaFace,
-                  ArcFace, FaceDancer, result_img_path, source_z=None):
+def run_inference(opt, source, target, RetinaFace, ArcFace, FaceDancer,
+                  result_img_path, source_z=None, source_condition=None,
+                  hand_landmarker=None, debug=False,
+                  hand_timestamp_ms=None):
     try:
-
         if not isinstance(target, str):
             target = target
         else:
@@ -27,17 +29,55 @@ def run_inference(opt, source, target, RetinaFace,
 
         target = np.array(target)
 
-        if source_z is None:
-            source = cv2.imread(source)
-            source = cv2.cvtColor(source, cv2.COLOR_RGB2BGR)
-            source = np.array(source)
+        if source_z is None or source_condition is None:
+            if isinstance(source, str):
+                source_bgr = cv2.imread(source)
+                if source_bgr is None:
+                    raise ValueError('Could not read source image: {}'.format(source))
+                source_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
+            else:
+                source_rgb = np.asarray(source)
 
-            source_h, source_w, _ = source.shape
-            source_a = RetinaFace(np.expand_dims(source, axis=0)).numpy()[0]
+            source_h, source_w, _ = source_rgb.shape
+            source_a = RetinaFace(np.expand_dims(source_rgb, axis=0)).numpy()[0]
             source_lm = get_lm(source_a, source_w, source_h)
-            source_aligned = norm_crop(source, source_lm, image_size=112, shrink_factor=1.0)
 
-            source_z = ArcFace.predict(np.expand_dims(source_aligned / 255.0, axis=0))
+            source_affine_256, _ = estimate_norm(source_lm, image_size=256, mode='arcface', shrink_factor=1.0)
+
+            if source_condition is None and hand_landmarker is not None:
+                try:
+                    source_condition, source_mask_canon, _ = build_canonical_condition(
+                        source_rgb, source_affine_256, hand_landmarker,
+                        timestamp_ms=hand_timestamp_ms
+                    )
+                except Exception as error:
+                    print('WARN: hand detection failed: {}'.format(error))
+                    source_condition = None
+
+            if source_condition is None:
+                # Fallimento detector o detector disabilitato: comportamento equivalente a "nessuna occlusione".
+                source_condition = np.zeros(
+                    (256, 256, 4),
+                    dtype=np.float32
+                )
+                source_mask_canon = np.zeros(
+                    (256, 256, 1),
+                    dtype=np.float32
+                )
+
+            if debug and 'source_mask_canon' in locals():
+                cv2.imwrite(
+                    'results/source_hand_mask_canon.png',
+                    (source_mask_canon[..., 0] * 255).astype(np.uint8)
+                )
+
+            if source_z is None:
+                source_aligned = norm_crop(
+                    source_rgb, source_lm, image_size=112, shrink_factor=1.0
+                )
+                source_z = ArcFace.predict(
+                    np.expand_dims(source_aligned / 255.0, axis=0), verbose=0
+                )
 
         blend_mask_base = np.zeros(shape=(256, 256, 1))
         blend_mask_base[77:240, 32:224] = 1
@@ -53,6 +93,13 @@ def run_inference(opt, source, target, RetinaFace,
                                                       im_h // detection_scale)), axis=0)).numpy()
         total_img = im / 255.0
 
+        if len(FaceDancer.inputs) != 3:
+            raise ValueError(
+                'The loaded generator must be a FaceDancer-SOA model '
+                'with inputs (target, source_identity, source_condition).'
+            )
+
+        source_condition_batch = np.expand_dims(source_condition, axis=0)
         for annotation in faces:
             lm_align = get_lm(annotation, im_w, im_h)
 
@@ -61,7 +108,12 @@ def run_inference(opt, source, target, RetinaFace,
             im_aligned = cv2.warpAffine(im, M, (256, 256), borderValue=0.0)
 
             # face swap
-            face_swap = FaceDancer.predict([np.expand_dims((im_aligned - 127.5) / 127.5, axis=0), source_z])
+            generator_inputs = [
+                np.expand_dims((im_aligned - 127.5) / 127.5, axis=0),
+                source_z,
+                source_condition_batch
+            ]
+            face_swap = FaceDancer.predict(generator_inputs, verbose=0)
             face_swap = (face_swap[0] + 1) / 2
 
             # get inverse transformation landmarks
@@ -81,23 +133,21 @@ def run_inference(opt, source, target, RetinaFace,
 
         cv2.imwrite(result_img_path, cv2.cvtColor(total_img, cv2.COLOR_BGR2RGB))
 
-        return total_img, source_z
+        return total_img, source_z, source_condition
 
     except Exception as e:
-        print('\n', e)
-        sys.exit(0)
+        raise RuntimeError('Face swap inference failed: {}'.format(e)) from e
 
 
-def video_swap(opt, face, input_video, RetinaFace, ArcFace, FaceDancer, out_video_filename):
+def video_swap(opt, face, input_video, RetinaFace, ArcFace, FaceDancer,
+               out_video_filename, hand_landmarker=None):
     video_forcheck = VideoFileClip(input_video)
-
     if video_forcheck.audio is None:
         no_audio = True
     else:
         no_audio = False
 
     del video_forcheck
-
     if not no_audio:
         video_audio_clip = AudioFileClip(input_video)
 
@@ -108,19 +158,28 @@ def video_swap(opt, face, input_video, RetinaFace, ArcFace, FaceDancer, out_vide
 
     frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = video.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 25.0
 
     if os.path.exists(temp_results_dir):
         shutil.rmtree(temp_results_dir)
     os.makedirs(temp_results_dir, exist_ok=True)
 
     source_z = None
+    source_condition = None
 
     for frame_index in tqdm(range(frame_count)):
         ret, frame = video.read()
         if ret:
-            _, source_z = run_inference(opt, face, frame, RetinaFace, ArcFace, FaceDancer,
-                                        os.path.join('./tmp_frames', 'frame_{:0>7d}.png'.format(frame_index)),
-                                        source_z=source_z)
+            _, source_z, source_condition = run_inference(
+                opt, face, frame, RetinaFace, ArcFace, FaceDancer,
+                os.path.join('./tmp_frames', 'frame_{:0>7d}.png'.format(frame_index)),
+                source_z=source_z,
+                source_condition=source_condition,
+                hand_landmarker=hand_landmarker,
+                debug=opt.debug_hand_mask,
+                hand_timestamp_ms=int(round(frame_index * 1000.0 / fps))
+            )
     video.release()
 
     path = os.path.join('./tmp_frames', '*.png')

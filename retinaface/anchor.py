@@ -4,6 +4,20 @@ import tensorflow as tf
 import numpy as np
 from itertools import product as product
 
+'''
+anchor.py è il modulo che definisce i “prior box” e il meccanismo di codifica/decodifica delle annotazioni per RetinaFace. 
+Non è un componente di generazione dell immagine, ma una parte fondamentale del processo di rilevamento del volto: 
+- genera la griglia di ancore che il detector usa per confrontare le predizioni con le ground truth, 
+- calcola i valori da ottimizzare durante l’addestramento e poi 
+- ricostruisce le coordinate finali delle stime. 
+
+In pratica qui si traduce la geometria delle bounding box e dei landmarks in uno spazio normalizzato rispetto alle ancore e viceversa, 
+permettendo di misurare la sovrapposizione tra box previste e box reali e di selezionare quali ancore devono essere considerate positive, 
+negative o ignorate.
+Questo file lavora completamente a livello di coordinate e non ha alcuna dipendenza diretta né con il generatore né con il discriminatore di FaceDancer. 
+Si usa quando RetinaFace deve addestrarsi o inferire il volto: il resto del progetto può poi impiegare i risultati del rilevatore per ritagliare 
+e allineare le facce, ma il funzionamento interno del detector è isolato in anchor.py.
+'''
 
 ###############################################################################
 #   Tensorflow / Numpy Priors                                                 #

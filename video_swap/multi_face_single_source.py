@@ -13,8 +13,9 @@ from tqdm import tqdm
 
 sys.path.insert (0, '.')
 from networks.generator import get_generator
-from networks.layers import AdaIN, AdaptiveAttention
+from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
 from retinaface.models import *
+from utils.hand_occlusion import build_canonical_condition, create_hand_landmarker
 from utils.utils import (estimate_norm, get_lm, inverse_estimate_norm,
                          norm_crop, transform_landmark_points)
 
@@ -54,6 +55,7 @@ def swap(opt):
     G = load_model(opt.facedancer_path, compile=False,
                    custom_objects={"AdaIN": AdaIN,
                                    "AdaptiveAttention": AdaptiveAttention,
+                                   "AdaptiveAttentionSOA": AdaptiveAttentionSOA,
                                    "InstanceNormalization": InstanceNormalization})
     G.summary()
 
@@ -87,14 +89,29 @@ def swap(opt):
     source = np.asarray(Image.open(opt.swap_source).convert('RGB'))
     source_h, source_w, _ = source.shape
 
-    if opt.align_source:
+    source_lm = None
+    if opt.align_source or len(G.inputs) == 3:
         source_a = RetinaFace(np.expand_dims(source, axis=0)).numpy()[0]
         source_lm = get_lm(source_a, source_w, source_h)
+
+    if opt.align_source:
         source_aligned = norm_crop(source, source_lm, image_size=112)
     else:
         source_aligned = cv2.resize(source, [112, 112])
 
     source_z = ArcFace.predict(np.expand_dims(source_aligned / 255.0, axis=0))
+
+    source_condition = np.zeros((1, 256, 256, 4), dtype=np.float32)
+    hand_landmarker = None
+    if len(G.inputs) == 3:
+        hand_landmarker = create_hand_landmarker(opt.hand_task_path)
+        source_affine_256, _ = estimate_norm(
+            source_lm, image_size=256, mode='arcface', shrink_factor=1.0
+        )
+        condition, _, _ = build_canonical_condition(
+            source, source_affine_256, hand_landmarker, timestamp_ms=0
+        )
+        source_condition = np.expand_dims(condition, axis=0)
 
     blend_mask_base = np.zeros(shape=(256, 256, 1))
     blend_mask_base[100:240, 32:224] = 1
@@ -127,7 +144,13 @@ def swap(opt):
             im_aligned = cv2.warpAffine(im, M, (256, 256), borderValue=0.0)
 
             # face swap
-            changed_face_cage = G.predict([np.expand_dims((im_aligned - 127.5) / 127.5, axis=0), source_z])
+            generator_inputs = [
+                np.expand_dims((im_aligned - 127.5) / 127.5, axis=0),
+                source_z
+            ]
+            if len(G.inputs) == 3:
+                generator_inputs.append(source_condition)
+            changed_face_cage = G.predict(generator_inputs, verbose=0)
             changed_face = (changed_face_cage[0] + 1) / 2
 
             # get inverse transformation landmarks
@@ -149,6 +172,8 @@ def swap(opt):
         vid_out.write(cv2.cvtColor((np.clip(total_img * 255, 0, 255)).astype('uint8'), cv2.COLOR_BGR2RGB))
 
     vid_out.release()
+    if hand_landmarker is not None:
+        hand_landmarker.close()
 
 
 if __name__ == '__main__':
@@ -162,8 +187,11 @@ if __name__ == '__main__':
                         default="./arcface_model/ArcFace-Res50.h5",
                         help='Path to arcface model. Used to extract identity from source.')
     parser.add_argument('--facedancer_path', type=str,
-                        default="./model_zoo/FaceDancer_config_c_HQ.h5",
-                        help='Path to pretrained FaceDancer model.')
+                        default="./model_zoo/FaceDancer_SOA.h5",
+                        help='Path to the trained FaceDancer-SOA model.')
+    parser.add_argument('--hand_task_path', type=str,
+                        default='./models/hand_landmarker.task',
+                        help='Path to MediaPipe hand_landmarker.task.')
 
     # video / image data to use
     parser.add_argument('--vid_path', type=str,

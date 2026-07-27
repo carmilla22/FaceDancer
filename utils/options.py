@@ -28,9 +28,10 @@ class FaceDancerOptions():
                                  help='Path to RetinaFace model.')
         self.parser.add_argument('--arcface_path', type=str, default='./arcface_model/ArcFace-Res50.h5',
                                  help='Path to ArcFace model. Used to extract identity from source.')
-        self.parser.add_argument('--facedancer_path', type=str, default='./model_zoo/FaceDancer_config_c_HQ.h5',
-                                 help='Path to pretrained FaceDancer model')
-
+        self.parser.add_argument('--facedancer_path', type=str, default='./model_zoo/FaceDancer_SOA.h5',
+                                 help='Path to the trained three-input FaceDancer-SOA model')
+        self.parser.add_argument('--hand_task_path', type=str, default='./models/hand_landmarker.task', help='Percorso al file MediaPipe hand_landmarker.task')
+        self.parser.add_argument('--debug_hand_mask', action='store_true', help='Salva immagini debug della maschera mano')
         self.parser.add_argument('--swap_source', type=str,
                                  help='Path to source face for video swap.')
 

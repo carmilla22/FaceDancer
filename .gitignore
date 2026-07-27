@@ -2,3 +2,9 @@
 *.mp4
 *.pyc
 .idea
+.venv*/
+__pycache__/
+tmp_frames/
+results/
+source_image/
+swap_image/

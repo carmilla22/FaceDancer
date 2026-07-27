@@ -9,10 +9,11 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow_addons.layers import InstanceNormalization
 
-from networks.layers import AdaIN, AdaptiveAttention
+from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
 from retinaface.models import *
 from utils.options import FaceDancerOptions
 from utils.swap_func import run_inference
+from utils.hand_occlusion import create_hand_landmarker
 
 logging.getLogger().setLevel(logging.ERROR)
 
@@ -36,10 +37,15 @@ if __name__ == '__main__':
     G = load_model(opt.facedancer_path, compile=False,
                    custom_objects={"AdaIN": AdaIN,
                                    "AdaptiveAttention": AdaptiveAttention,
+                                   "AdaptiveAttentionSOA": AdaptiveAttentionSOA,
                                    "InstanceNormalization": InstanceNormalization})
     G.summary()
 
     print('\nProcessing: {}'.format(opt.img_path))
+    hand_landmarker = create_hand_landmarker(opt.hand_task_path)
     run_inference(opt, opt.swap_source, opt.img_path,
-                  RetinaFace, ArcFace, G, opt.img_output)
+                  RetinaFace, ArcFace, G, opt.img_output,
+                  hand_landmarker=hand_landmarker,
+                  debug=opt.debug_hand_mask)
+    hand_landmarker.close()
     print('\nDone! {}'.format(opt.img_output))

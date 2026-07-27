@@ -4,6 +4,20 @@ from tensorflow.keras.applications import MobileNetV2, ResNet50
 from tensorflow.keras.layers import Input, Conv2D, ReLU, LeakyReLU
 from retinaface.anchor import decode_tf, prior_box_tf
 
+'''
+models.py definisce l’intera architettura del detector RetinaFace usata nel progetto, partendo da un backbone standard (ResNet50 o MobileNetV2) 
+e trasformandolo in un modello che estrae mappe di feature a tre diverse risoluzioni. 
+Su queste feature viene costruita una piramide di feature con un FPN, poi ogni livello viene elaborato da uno strato SSH 
+che arricchisce le rappresentazioni prima di calcolare le tre uscite principali: 
+- regressione delle bounding box, 
+- regressione dei landmark facciali e 
+- classificazione oggetto/fondo. 
+In fase di training il modello restituisce direttamente queste tre componenti, mentre in inferenza concatena le previsioni, 
+applica le prior box, decodifica le coordinate e filtra i risultati con non-max suppression per ottenere i volti finali. 
+In sintesi, models.py mette insieme backbone, feature pyramid e testate di regressione/classificazione per trasformare 
+un’immagine in una lista di facce rilevate con box e landmark.
+'''
+
 
 def _regularizer(weights_decay):
     """l2 regularizer"""
