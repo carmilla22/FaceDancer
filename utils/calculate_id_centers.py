@@ -13,12 +13,12 @@ from tqdm import tqdm
 def main(opt):
     device = torch.device(opt.device_id if torch.cuda.is_available() else "cpu")
 
+    #la PIL apre le immagini in formato RGB, le rende dei Tensor e poi le normalizza per ogni canale RGB, così da poterla dare in pasto a CodFace
     eval_transform = transforms.Compose([transforms.ToTensor(),
                                          transforms.Resize(112),
-                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
+                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) 
     cosface_state_dict = torch.load(opt.cosface_path)
-    CosFace = iresnet50()
+    CosFace = iresnet50() #calcolo embedding di identità (512 dimensioni) tramite modello cosface
     CosFace.load_state_dict(cosface_state_dict)
     CosFace.eval()
     CosFace.to(device)

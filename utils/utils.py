@@ -5,7 +5,8 @@ import math
 
 import tensorflow as tf
 from tensorflow.keras.models import model_from_json
-from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
+from networks.layers import (AdaIN, AdaptiveAttention, AdaptiveAttentionSOA,
+                             InstanceNormalization)
 
 from skimage import transform as trans
 from scipy.signal import convolve2d
@@ -31,7 +32,8 @@ def load_model_internal(path, name, num):
         custom_objects={
             'AdaIN': AdaIN,
             'AdaptiveAttention': AdaptiveAttention,
-            'AdaptiveAttentionSOA': AdaptiveAttentionSOA
+            'AdaptiveAttentionSOA': AdaptiveAttentionSOA,
+            'InstanceNormalization': InstanceNormalization
         }
     )
     mod.load_weights(path + name + '_' + str(num) + '.h5')

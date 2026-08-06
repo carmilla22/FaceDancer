@@ -1,4 +1,6 @@
-tensorflow-addons
+tensorflow 
+tf-keras
+tensorboard
 opencv-python-headless
 scipy
 scikit-image

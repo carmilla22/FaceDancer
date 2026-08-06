@@ -1,16 +1,27 @@
+import os
+
+# FaceDancer and its pretrained H5 models were built with legacy Keras 2.
+# This must be set before importing TensorFlow.
+os.environ.setdefault('TF_USE_LEGACY_KERAS', '1')
+
 import tensorflow as tf
 from tensorflow.keras.models import load_model, model_from_json
 
 import numpy as np
-import os
+import atexit
+import sys
 import warnings
 import json
 import math
 import argparse
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 warnings.filterwarnings("ignore")
 
-from tqdm import tqdm
 from datetime import datetime
 
 from dataset.tf_records_parser import get_tf_dataset
@@ -18,6 +29,7 @@ from networks.generator import get_generator
 from networks.discriminator import get_discriminator
 from utils.loss import (perceptual_loss_flagged, perceptual_similarity_loss,
                         fs_reconstruction_loss_l1, occlusion_consistency_loss)
+from utils.hand_occlusion import create_hand_landmarker, detect_hand_mask
 from utils.utils import save_model_internal, load_model_internal, save_training_meta, load_training_meta, log_info
 
 
@@ -30,19 +42,33 @@ def build_occlusion_condition(source, source_mask):
     )
 
 
+def detect_source_masks(source_batch, hand_landmarker):
+    """Detect one MediaPipe hand mask for each normalized RGB source."""
+    source_rgb = np.clip(
+        (np.asarray(source_batch) + 1.0) * 127.5, 0, 255
+    ).astype(np.uint8)
+    return np.stack([
+        detect_hand_mask(image, hand_landmarker)
+        for image in source_rgb
+    ]).astype(np.float32)
+
+
 def run(opt):
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         tf.config.set_visible_devices(gpus[opt.device_id], 'GPU')
-    if opt.occlusion_data_dir is None:
+    if opt.source_data_dir is None:
         raise ValueError(
-            '--occlusion_data_dir is required for SOA training and must '
-            'point to the extracted dataset_finale directory.'
+            '--source_data_dir is required and must point to the training '
+            'TFRecords containing hand-occluded source faces.'
         )
-    if not 0.0 < opt.occlusion_train_fraction < 1.0:
+    if opt.eval_source_dir is None:
         raise ValueError(
-            '--occlusion_train_fraction must be between 0 and 1.'
+            '--eval_source_dir is required and must point to the validation '
+            'TFRecords containing hand-occluded source faces.'
         )
+    hand_landmarker = create_hand_landmarker(opt.hand_task_path)
+    atexit.register(hand_landmarker.close)
     lr = opt.lr
 
     # evaluation models
@@ -73,13 +99,13 @@ def run(opt):
     ifsr_loss_function = perceptual_similarity_loss(ifsr_blocks, ifsr_weight, ifsr_margin, opt.arcface_path)
     percept_loss = perceptual_loss_flagged((opt.image_size, opt.image_size, 3), p_blocks, [1, 1, 1, 1, 1])
 
-    if not os.path.isdir(opt.chkp_dir + opt.log_name):
-        os.mkdir(opt.chkp_dir + opt.log_name)
-        os.mkdir(opt.chkp_dir + opt.log_name + "/dis")
-        os.mkdir(opt.chkp_dir + opt.log_name + "/gen")
-        os.mkdir(opt.chkp_dir + opt.log_name + "/state")
-    if not os.path.isdir("../config/" + opt.log_name):
-        os.mkdir("../config/" + opt.log_name)
+    checkpoint_dir = Path(opt.chkp_dir) / opt.log_name
+    for subdirectory in ('dis', 'gen', 'state'):
+        (checkpoint_dir / subdirectory).mkdir(
+            parents=True, exist_ok=True
+        )
+    config_dir = PROJECT_ROOT / 'config' / opt.log_name
+    config_dir.mkdir(parents=True, exist_ok=True)
 
     print("[*] begin training...")
     iteration = 0
@@ -88,8 +114,8 @@ def run(opt):
     # load checkpoint
     if opt.load is not None:
         print("[*] loading checkpoint " + str(opt.load) + "...")
-        G = load_model_internal(opt.chkp_dir + opt.log_name + "/gen/", "gen", opt.load)
-        D = load_model_internal(opt.chkp_dir + opt.log_name + "/dis/", "dis", opt.load)
+        G = load_model_internal(str(checkpoint_dir / 'gen') + os.sep, "gen", opt.load)
+        D = load_model_internal(str(checkpoint_dir / 'dis') + os.sep, "dis", opt.load)
 
         if len(G.inputs) != 3:
             raise ValueError(
@@ -97,25 +123,33 @@ def run(opt):
                 'three inputs.'
             )
 
-        checkpoint_state = load_training_meta(opt.chkp_dir + opt.log_name + "/state/", opt.load)
+        checkpoint_state = load_training_meta(
+            str(checkpoint_dir / 'state') + os.sep, opt.load
+        )
 
         epoch_s = checkpoint_state["epoch"]
         iteration = checkpoint_state["iteration"] + 1
 
         print("[*] continuing at iteration " + str(iteration) + "...")
 
-        # export the model to .h5 and exit
+        # export the complete model and exit
         if opt.export:
-            print('exporting G to h5...')
-            if not os.path.isdir('../exports/' + opt.log_name):
-                os.mkdir('../exports/' + opt.log_name)
-            G.save('../exports/' + opt.log_name + '/facedancer_' + str(opt.load) + '.h5')
+            print('exporting G to TensorFlow SavedModel format...')
+            export_dir = PROJECT_ROOT / 'exports' / opt.log_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+            export_path = export_dir / (
+                'facedancer_' + str(opt.load)
+            )
+            G.save(
+                str(export_path), save_format='tf', include_optimizer=False
+            )
+            print('[*] exported model: {}'.format(export_path))
 
             exit()
 
     # save options
     date = datetime.today().strftime('%Y_%m_%d_%H_%M')
-    with open('../config/' + opt.log_name + '/options_' + date + '.txt', 'w') as f:
+    with (config_dir / ('options_' + date + '.txt')).open('w') as f:
         json.dump(opt.__dict__, f, indent=2)
 
     # prepare learning rate schedule and optimizers
@@ -213,7 +247,7 @@ def run(opt):
                 change, source, source_mask
             )
 
-            # interpreted feature similarity regularization
+            # interpreted feature similarity regularization (IFSR)
             ifsr_loss = ifsr_loss_function(tf.image.resize((target + 1) / 2, [112, 112]),
                                            tf.image.resize((change + 1) / 2, [112, 112]))
 
@@ -239,7 +273,7 @@ def run(opt):
                    'generator/i_loss': i_lambda * i_loss,
                    'generator/c_loss': c_lambda * c_loss,
                    'generator/p_loss': p_lambda * p_loss,
-                   'generator/isfr_loss': ifsr_lambda * ifsr_loss,
+                   'generator/ifsr_loss': ifsr_lambda * ifsr_loss,
                    'generator/occ_loss': occ_lambda * occ_loss,
                    'generator/total_loss': total_loss,
                    'discriminator/d_loss': d_loss,
@@ -266,11 +300,15 @@ def run(opt):
         r = []
         change = change.numpy()
         change_s = change_s.numpy()
-        for i in range(0, 10, 5):
-            r.append(np.concatenate(change[i:i + 5], axis=1))
-            r.append(np.concatenate(change_s[i:i + 5], axis=1))
-            r.append(np.concatenate(target[i:i + 5], axis=1))
-            r.append(np.concatenate(source[i:i + 5], axis=1))
+        target = np.asarray(target)
+        source = np.asarray(source)
+        sample_count = min(
+            len(change), len(change_s), len(target), len(source), 10
+        )
+        r.append(np.concatenate(change[:sample_count], axis=1))
+        r.append(np.concatenate(change_s[:sample_count], axis=1))
+        r.append(np.concatenate(target[:sample_count], axis=1))
+        r.append(np.concatenate(source[:sample_count], axis=1))
 
         c1 = np.concatenate(r, axis=0)
         c1 = np.clip(c1, 0.0, 1.0)
@@ -281,36 +319,40 @@ def run(opt):
 
     # if exporting the model, skip creating summary writer
     if not opt.export:
-        summary_writer = tf.summary.create_file_writer(opt.log_dir + opt.log_name)
+        summary_dir = Path(opt.log_dir) / opt.log_name
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_writer = tf.summary.create_file_writer(str(summary_dir))
 
-    iteration_num = 500000
+    iteration_num = opt.iterations_per_epoch
     eval_dataset = iter(get_tf_dataset(
-        opt.eval_dir, opt.image_size, 10, repeat=True,
-        occlusion_data_dir=opt.occlusion_data_dir,
-        occlusion_split='validation',
-        occlusion_train_fraction=opt.occlusion_train_fraction,
-        occlusion_split_seed=opt.occlusion_split_seed
+        opt.eval_dir, opt.eval_source_dir, opt.image_size, 10, repeat=True
     ))
 
     # begin/resume training
     for epoch in range(epoch_s, opt.num_epochs):
 
         train_dataset = iter(get_tf_dataset(
-            opt.data_dir, opt.image_size, opt.batch_size,
-            occlusion_data_dir=opt.occlusion_data_dir,
-            occlusion_split='train',
-            occlusion_train_fraction=opt.occlusion_train_fraction,
-            occlusion_split_seed=opt.occlusion_split_seed
+            opt.data_dir, opt.source_data_dir, opt.image_size, opt.batch_size,
+            repeat=True
         ))
 
-        for i in tqdm(range(iteration_num), total=iteration_num):
+        for epoch_iteration in range(iteration_num):
             try:
+                print(
+                    '[TRAIN] Epoch {}/{} - iteration {}/{} '
+                    '(global {}) started.'.format(
+                        epoch + 1, opt.num_epochs,
+                        epoch_iteration + 1, iteration_num, iteration
+                    ),
+                    flush=True
+                )
                 data = train_dataset.__next__()
-                target_batch, source_data = data
-                source_batch, source_mask_batch = source_data
+                target_batch, source_batch = data
                 target_batch = target_batch.numpy()
                 source_batch = source_batch.numpy()
-                source_mask_batch = source_mask_batch.numpy()
+                source_mask_batch = detect_source_masks(
+                    source_batch, hand_landmarker
+                )
 
                 # randomly choose data points in batch to have target = source
                 source_same = np.random.choice([0, 1], opt.batch_size, p=[1 - opt.same_ratio, opt.same_ratio])
@@ -342,32 +384,71 @@ def run(opt):
                 if iteration % 1000 == 0:
                     chkp_num = str(int(np.floor(iteration / 10000)))
 
-                    save_model_internal(G, opt.chkp_dir + opt.log_name + "/gen/", "gen", chkp_num)
-                    save_model_internal(D, opt.chkp_dir + opt.log_name + "/dis/", "dis", chkp_num)
+                    save_model_internal(G, str(checkpoint_dir / 'gen') + os.sep, "gen", chkp_num)
+                    save_model_internal(D, str(checkpoint_dir / 'dis') + os.sep, "dis", chkp_num)
 
                 if iteration % 100 == 0:
                     checkpoint_state = {'iteration': iteration, 'epoch': epoch}
                     chkp_num = str(int(np.floor(iteration / 10000)))
-                    save_training_meta(checkpoint_state, opt.chkp_dir + opt.log_name + "/state/", chkp_num)
+                    save_training_meta(
+                        checkpoint_state,
+                        str(checkpoint_dir / 'state') + os.sep,
+                        chkp_num
+                    )
 
                 # soft evaluation
                 if iteration % 100 == 0:
-                    e_target, e_source_data = eval_dataset.__next__()
-                    e_source, e_source_mask = e_source_data
+                    e_target, e_source = eval_dataset.__next__()
+                    e_source_mask = detect_source_masks(
+                        e_source.numpy(), hand_landmarker
+                    )
                     e_losses = test_step(e_target, e_source, e_source_mask)
 
                     log_info(summary_writer, e_losses, iteration)
 
                     if (iteration % 100 == 0 and iteration < 10000) or (iteration % 1000 == 0):
-                        v_t_v, v_source_data = eval_dataset.__next__()
-                        v_s_v, v_source_mask = v_source_data
+                        v_t_v, v_s_v = eval_dataset.__next__()
+                        v_source_mask = detect_source_masks(
+                            v_s_v.numpy(), hand_landmarker
+                        )
                         log_image(summary_writer, v_t_v, v_s_v,
                                   v_source_mask, iteration)
 
                 iteration += 1
+                print(
+                    '[TRAIN] Epoch {}/{} - iteration {}/{} completed.'.format(
+                        epoch + 1, opt.num_epochs,
+                        epoch_iteration + 1, iteration_num
+                    ),
+                    flush=True
+                )
             except Exception as e:
                 print(e)
                 raise
+
+    # Always preserve the final weights, including short smoke-test runs that
+    # finish before the periodic checkpoint interval.
+    final_checkpoint_num = str(iteration)
+    save_model_internal(
+        G, str(checkpoint_dir / 'gen') + os.sep,
+        "gen", final_checkpoint_num
+    )
+    save_model_internal(
+        D, str(checkpoint_dir / 'dis') + os.sep,
+        "dis", final_checkpoint_num
+    )
+    save_training_meta(
+        {'iteration': iteration, 'epoch': opt.num_epochs},
+        str(checkpoint_dir / 'state') + os.sep,
+        final_checkpoint_num
+    )
+    print('[*] final checkpoint saved as {}.'.format(final_checkpoint_num))
+    print('[OUTPUT] Generator: {}'.format(
+        checkpoint_dir / 'gen' / ('gen_' + final_checkpoint_num + '.h5')
+    ))
+    print('[OUTPUT] TensorBoard: {}'.format(
+        Path(opt.log_dir) / opt.log_name
+    ))
 
 
 if __name__ == '__main__':
@@ -404,6 +485,8 @@ if __name__ == '__main__':
                         help='image normalization: scale')
     parser.add_argument('--num_epochs', type=int, default=500,
                         help='number of epochs')
+    parser.add_argument('--iterations_per_epoch', type=int, default=500000,
+                        help='number of training iterations per epoch')
 
     # hyper parameters
     parser.add_argument('--lr', type=float, default=0.0001,
@@ -474,12 +557,13 @@ if __name__ == '__main__':
                                  'affa_soa', 'affa_soa', 'affa_soa'],
                         help='what kind of decoding blocks to use')
 
-    parser.add_argument('--occlusion_data_dir', type=str, default=None,
-                        help='path to dataset_finale with images, hand_masks and metadata.csv')
-    parser.add_argument('--occlusion_train_fraction', type=float, default=0.7,
-                        help='fraction of occluded samples used for training')
-    parser.add_argument('--occlusion_split_seed', type=int, default=42,
-                        help='seed for the deterministic train/validation split')
+    parser.add_argument('--source_data_dir', type=str, default=None,
+                        help='path to training TFRecords containing hand-occluded source faces')
+    parser.add_argument('--eval_source_dir', type=str, default=None,
+                        help='path to validation TFRecords containing hand-occluded source faces')
+    parser.add_argument('--hand_task_path', type=str,
+                        default='./models/hand_landmarker.task',
+                        help='path to the MediaPipe Hand Landmarker task model')
 
     # data and devices
     parser.add_argument('--shuffle', type=bool, default=True,

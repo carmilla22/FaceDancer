@@ -1,8 +1,8 @@
-from keras.models import Model
-from keras.layers import *
-from keras.initializers import Constant
-from tensorflow_addons.layers import InstanceNormalization
-from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import *
+from tensorflow.keras.initializers import Constant
+from networks.layers import (AdaIN, AdaptiveAttention, AdaptiveAttentionSOA,
+                             InstanceNormalization)
 
 import numpy as np
 

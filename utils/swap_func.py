@@ -5,9 +5,6 @@ import sys
 
 import cv2
 import numpy as np
-import proglog
-from moviepy.editor import AudioFileClip, VideoFileClip
-from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import subprocess
@@ -26,6 +23,10 @@ def run_inference(opt, source, target, RetinaFace, ArcFace, FaceDancer,
             target = target
         else:
             target = cv2.imread(target)
+            if target is None:
+                raise ValueError(
+                    'Could not read target image: {}'.format(opt.img_path)
+                )
 
         target = np.array(target)
 
@@ -131,8 +132,16 @@ def run_inference(opt, source, target, RetinaFace, ArcFace, FaceDancer,
 
         total_img = np.clip(total_img * 255, 0, 255).astype('uint8')
 
-        cv2.imwrite(result_img_path, cv2.cvtColor(total_img, cv2.COLOR_BGR2RGB))
-
+        output_dir = os.path.dirname(result_img_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        written = cv2.imwrite(
+            result_img_path, cv2.cvtColor(total_img, cv2.COLOR_BGR2RGB)
+        )
+        if not written:
+            raise IOError(
+                'Could not write result image: {}'.format(result_img_path)
+            )
         return total_img, source_z, source_condition
 
     except Exception as e:
@@ -141,6 +150,10 @@ def run_inference(opt, source, target, RetinaFace, ArcFace, FaceDancer,
 
 def video_swap(opt, face, input_video, RetinaFace, ArcFace, FaceDancer,
                out_video_filename, hand_landmarker=None):
+    import proglog
+    from moviepy.editor import AudioFileClip, VideoFileClip
+    from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+
     video_forcheck = VideoFileClip(input_video)
     if video_forcheck.audio is None:
         no_audio = True

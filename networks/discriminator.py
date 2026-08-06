@@ -1,6 +1,6 @@
-from keras.layers import *
-from keras.models import Model
-from tensorflow_addons.layers import InstanceNormalization
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import Model
+from networks.layers import InstanceNormalization
 
 
 def residual_down_block(inputs, filters, resample=True):

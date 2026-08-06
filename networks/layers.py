@@ -13,6 +13,60 @@ from tensorflow.python.keras.utils import conv_utils
 
 tf.keras.utils.disable_interactive_logging()
 
+
+class InstanceNormalization(Layer):
+    """Instance normalization compatible with channels-last image tensors."""
+
+    def __init__(self, epsilon=1e-3, center=True, scale=True, **kwargs):
+        super(InstanceNormalization, self).__init__(**kwargs)
+        self.epsilon = epsilon
+        self.center = center
+        self.scale = scale
+
+    def build(self, input_shape):
+        channels = input_shape[-1]
+        if channels is None:
+            raise ValueError(
+                'The channel dimension of InstanceNormalization must be known.'
+            )
+        if self.scale:
+            self.gamma = self.add_weight(
+                name='gamma', shape=(channels,), initializer='ones',
+                trainable=True
+            )
+        else:
+            self.gamma = None
+        if self.center:
+            self.beta = self.add_weight(
+                name='beta', shape=(channels,), initializer='zeros',
+                trainable=True
+            )
+        else:
+            self.beta = None
+        super(InstanceNormalization, self).build(input_shape)
+
+    def call(self, inputs):
+        reduction_axes = list(range(1, len(inputs.shape) - 1))
+        mean, variance = tf.nn.moments(
+            inputs, axes=reduction_axes, keepdims=True
+        )
+        outputs = (inputs - mean) * tf.math.rsqrt(variance + self.epsilon)
+        if self.scale:
+            outputs = outputs * self.gamma
+        if self.center:
+            outputs = outputs + self.beta
+        return outputs
+
+    def get_config(self):
+        config = super(InstanceNormalization, self).get_config()
+        config.update({
+            'epsilon': self.epsilon,
+            'center': self.center,
+            'scale': self.scale,
+        })
+        return config
+
+
 class AdaIN(Layer):
     def __init__(self, **kwargs):
         super(AdaIN, self).__init__(**kwargs)

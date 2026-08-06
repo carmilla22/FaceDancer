@@ -4,7 +4,8 @@ import tensorflow as tf
 import argparse
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
-tf.config.set_visible_devices(gpus[0], 'GPU')
+if gpus:
+    tf.config.set_visible_devices(gpus[0], 'GPU')
 
 import os
 import random
@@ -54,6 +55,8 @@ if __name__ == '__main__':
                         help='shuffle that order of the image paths.')
     parser.add_argument('--num_shards', type=int, default=1000,
                         help='number of images per shard')
+    parser.add_argument('--max_images', type=int, default=None,
+                        help='optional maximum number of images to shard')
 
     opt = parser.parse_args()
 
@@ -62,27 +65,40 @@ if __name__ == '__main__':
     images_list = []
 
     for fld in tqdm(folder_list):
-        for im in os.listdir(data_path + fld):
-            images_list.append(fld + '/' + im)
+        folder_path = os.path.join(data_path, fld)
+        if os.path.isfile(folder_path):
+            images_list.append(folder_path)
+            continue
+        for im in os.listdir(folder_path):
+            image_path = os.path.join(folder_path, im)
+            if os.path.isfile(image_path):
+                images_list.append(image_path)
 
     if opt.shuffle:
         random.shuffle(images_list)
+    if opt.max_images is not None:
+        if opt.max_images <= 0:
+            raise ValueError('--max_images must be greater than zero')
+        images_list = images_list[:opt.max_images]
     index = 0
     n_images_shard = opt.num_shards
     n_shards = int(len(images_list) / n_images_shard) + (1 if len(images_list) % n_images_shard != 0 else 0)
 
     dataset_name = opt.data_name
     train_val_test = opt.data_type
-    tfrecords_path = opt.target_dir + "{}_{}_{}.records"
+    os.makedirs(opt.target_dir, exist_ok=True)
+    tfrecords_path = os.path.join(
+        opt.target_dir, "{}_{}_{}.records"
+    )
 
     for shard in tqdm(range(n_shards)):
         tfrecords_shard_path = tfrecords_path.format(dataset_name,
                                                      train_val_test,
                                                      '%.5d-of-%.5d' % (shard, n_shards - 1))
-        end = index + n_images_shard if len(images_list) > (index + n_images_shard) else -1
+        end = min(index + n_images_shard, len(images_list))
         images_shard_list = images_list[index: end]
         with tf.io.TFRecordWriter(tfrecords_shard_path) as writer:
             for filename in images_shard_list:
-                tf_example = image_example(data_path + filename)
+                tf_example = image_example(filename)
                 writer.write(tf_example.SerializeToString())
         index = end

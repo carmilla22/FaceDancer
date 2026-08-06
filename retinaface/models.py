@@ -147,7 +147,8 @@ class FPN(tf.keras.layers.Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
-class SSH(tf.keras.layers.Layer):
+class SSH(tf.keras.layers.Layer): #Single Stage Headless Layer, serve ad arricchire le feature map provenienti dal FPN con 
+    #convoluzioni a diverse dimensioni di kernel, combinando informazioni locali e globali, quindi a scale diverse.
     """Single Stage Headless Layer"""
     def __init__(self, out_ch, wd, **kwargs):
         super(SSH, self).__init__(**kwargs)

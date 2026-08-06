@@ -8,7 +8,7 @@ import tensorflow as tf
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 from tensorflow.keras.models import load_model
-from tensorflow_addons.layers import InstanceNormalization
+from networks.layers import InstanceNormalization
 from tqdm import tqdm
 
 sys.path.insert (0, '.')

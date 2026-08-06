@@ -33,16 +33,24 @@ HAND_THUMB_WEB_CURVE_FACTOR = 0.25
 HAND_THUMB_RADIUS_FACTORS = (0.0, 0.18, 0.15, 0.11, 0.09)
 HAND_THUMB_RADIUS_MAX_BASE_RATIO = 2.25
 MEDIAPIPE_CONTEXT_MARGIN_RATIO = 0.10
+MEDIAPIPE_ADAPTIVE_CONTEXT_MARGIN_RATIOS = (
+    0.0,
+    0.025,
+    0.05,
+    MEDIAPIPE_CONTEXT_MARGIN_RATIO,
+)
 
 
 class VideoHandLandmarker:
-    """Adapter stateful per il Hand Landmarker MediaPipe in modalità VIDEO."""
+    """Hand Landmarker VIDEO con margine adattivo e stabile nel tempo."""
 
-    def __init__(self, landmarker):
-        self._landmarker = landmarker
-        self._last_timestamp_ms = -1
+    def __init__(self, landmarkers): #riceve una lista si hand landmarker già ricavati formati da (margin_ratio, landmarker)
+        self._landmarkers = tuple(landmarkers)
+        self._last_timestamp_ms = -1 #serve perchè mediapipe video richiede timestamp strettamente crescenti, quindi inizializzo a -1
+        self._active_margin_index = None #memorizza quale margine ha funzionato e permesso la detection della mano
+        self.last_context_margin_ratio = None #serve per sapere quale margine è stato utilizzato 
 
-    def detect(self, image, timestamp_ms=None):
+    def detect(self, image_rgb, timestamp_ms=None):
         if timestamp_ms is None:
             timestamp_ms = self._last_timestamp_ms + 1
 
@@ -54,17 +62,72 @@ class VideoHandLandmarker:
                     timestamp_ms, self._last_timestamp_ms
                 )
             )
+        #viene provato per primo il margine che ha precedentemente funzionato, se non c'è ne prova uno a caso
+        if self._active_margin_index is None:
+            candidate_indices = list(range(len(self._landmarkers))) 
+        else:
+            candidate_indices = [self._active_margin_index]
+            candidate_indices.extend(
+                index
+                for index in range(len(self._landmarkers))
+                if index != self._active_margin_index
+            )
 
-        result = self._landmarker.detect_for_video(image, timestamp_ms)
+        last_result = None
+        last_geometry = None
+        for index in candidate_indices:
+            context_margin_ratio, raw_landmarker = self._landmarkers[index]
+            #creazione del frame quadrato con margine di contesto, necessario per la detection della mano
+            # e viene dato in masto poi a mediapipe
+            square_frame, square_size, pad_left, pad_top = (
+                create_square_mediapipe_frame(
+                    image_rgb,
+                    context_margin_ratio=context_margin_ratio,
+                )
+            )
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=square_frame,
+            )
+            result = raw_landmarker.detect_for_video(mp_image, timestamp_ms)
+            geometry = (square_size, pad_left, pad_top)
+            last_result = result
+            last_geometry = geometry
+
+            #se viene trovata una mano allora vengono aggiornati i valori del margine utilizzato e il timestamp
+            if getattr(result, 'hand_landmarks', []):
+                self._active_margin_index = index
+                self.last_context_margin_ratio = context_margin_ratio
+                self._last_timestamp_ms = timestamp_ms
+                return remap_square_landmarks_to_frame(
+                    result,
+                    image_rgb.shape[:2],
+                    *geometry,
+                )
+
         self._last_timestamp_ms = timestamp_ms
-        return result
+        self.last_context_margin_ratio = None
+        return remap_square_landmarks_to_frame(
+            last_result,
+            image_rgb.shape[:2],
+            *last_geometry,
+        )
 
     def close(self):
-        self._landmarker.close()
+        for _, landmarker in self._landmarkers:
+            try:
+                landmarker.close()
+            except RuntimeError as error:
+                # During interpreter shutdown MediaPipe's executor may already
+                # be unavailable. The native resources are being released by
+                # process termination in that case.
+                if 'after shutdown' not in str(error):
+                    raise
 
 
-def create_hand_landmarker(model_path, num_hands=2):
+def create_hand_landmarker(model_path, num_hands=1):
     model_path = Path(model_path)
+    #verifica che il file hand_landmarker.task esista    
     if not model_path.is_file():
         raise FileNotFoundError(
             'Modello MediaPipe Hand Landmarker non trovato: {}'.format(
@@ -72,19 +135,30 @@ def create_hand_landmarker(model_path, num_hands=2):
             )
         )
 
-    options = mp.tasks.vision.HandLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
-        running_mode=mp.tasks.vision.RunningMode.VIDEO,
-        num_hands=int(num_hands),
-        min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-    landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
-    return VideoHandLandmarker(landmarker)
+    landmarkers = []
+    for context_margin_ratio in MEDIAPIPE_ADAPTIVE_CONTEXT_MARGIN_RATIOS: #si creano detector con valore del margine diverso e li si prova
+        #setting dei parametri
+        options = mp.tasks.vision.HandLandmarkerOptions(
+            base_options=mp.tasks.BaseOptions(
+                model_asset_path=str(model_path)
+            ),
+            running_mode=mp.tasks.vision.RunningMode.VIDEO,
+            num_hands=int(num_hands),
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        raw_landmarker = (
+            mp.tasks.vision.HandLandmarker.create_from_options(options)
+        )
+        landmarkers.append((context_margin_ratio, raw_landmarker))
+    return VideoHandLandmarker(landmarkers)
 
 
-def create_square_mediapipe_frame(image_rgb):
+def create_square_mediapipe_frame(
+    image_rgb,
+    context_margin_ratio=MEDIAPIPE_CONTEXT_MARGIN_RATIO,
+):
     """
     Inserisce il frame in un canvas quadrato con margine di contesto.
 
@@ -94,7 +168,7 @@ def create_square_mediapipe_frame(image_rgb):
     frame_height, frame_width = image_rgb.shape[:2]
     content_size = max(frame_width, frame_height)
     context_margin = int(round(
-        content_size * MEDIAPIPE_CONTEXT_MARGIN_RATIO
+        content_size * context_margin_ratio
     ))
     square_size = content_size + context_margin * 2
     pad_left = (content_size - frame_width) // 2 + context_margin
@@ -109,6 +183,7 @@ def create_square_mediapipe_frame(image_rgb):
     return square_frame, square_size, pad_left, pad_top
 
 
+#Riporta sul frame originale i landmark rilevati nel canvas quadrato.
 def remap_square_landmarks_to_frame(
     hand_landmarker_result,
     frame_size,
@@ -116,7 +191,6 @@ def remap_square_landmarks_to_frame(
     pad_left,
     pad_top,
 ):
-    """Riporta sul frame originale i landmark rilevati nel canvas quadrato."""
     frame_height, frame_width = frame_size
     remapped_hands = []
 
@@ -149,21 +223,7 @@ def remap_square_landmarks_to_frame(
 def detect_hand_landmarks(image_rgb, landmarker, timestamp_ms=None):
     """Rileva le mani senza distorcere frame non quadrati."""
     image_rgb = np.ascontiguousarray(image_rgb, dtype=np.uint8)
-    square_frame, square_size, pad_left, pad_top = (
-        create_square_mediapipe_frame(image_rgb)
-    )
-    mp_image = mp.Image(
-        image_format=mp.ImageFormat.SRGB,
-        data=square_frame,
-    )
-    result = landmarker.detect(mp_image, timestamp_ms=timestamp_ms)
-    return remap_square_landmarks_to_frame(
-        result,
-        image_rgb.shape[:2],
-        square_size,
-        pad_left,
-        pad_top,
-    )
+    return landmarker.detect(image_rgb, timestamp_ms=timestamp_ms)
 
 
 def get_hand_landmark_points(landmarks, frame_size):
@@ -386,9 +446,8 @@ def create_landmark_hand_segmentation_mask(
         1.0,
     )
 
-    # Il palmo usa una dilatazione dedicata e due estremi sintetici del
-    # polso. Le dita continuano a usare i raggi progressivi sottostanti,
-    # evitando di gonfiare gli spazi interdigitali.
+    # Il palmo usa una dilatazione dedicata e due estremi sintetici del polso. 
+    # Le dita continuano a usare i raggi progressivi sottostanti, evitando di gonfiare gli spazi interdigitali.
     palm_radius = int(base_radius * HAND_PALM_RADIUS_RATIO)
     palm_contour = create_anatomical_palm_contour(points, frame_size)
     cv2.fillPoly(hand_mask, [palm_contour], 255)
@@ -481,7 +540,7 @@ def create_hand_segmentation_mask(
     padding_min=HAND_MASK_PADDING_MIN,
     padding_max=HAND_MASK_PADDING_MAX,
 ):
-    """Unisce le segmentation mask di tutte le mani rilevate."""
+
     frame_height, frame_width = frame_size
     hand_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
 

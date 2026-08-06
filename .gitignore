@@ -1,7 +1,13 @@
 *.h5
 *.mp4
 *.pyc
+*.png
+*.jpg
+*.jpeg
 .idea
+*.json
+*.txt
+*.v2
 .venv*/
 __pycache__/
 tmp_frames/

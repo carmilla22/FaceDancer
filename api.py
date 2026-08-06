@@ -1,7 +1,7 @@
 import logging
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from tensorflow_addons.layers import InstanceNormalization
+from networks.layers import InstanceNormalization
 from networks.layers import AdaIN, AdaptiveAttention, AdaptiveAttentionSOA
 from retinaface.models import *
 from utils.options import FaceDancerOptions

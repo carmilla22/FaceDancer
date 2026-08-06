@@ -150,9 +150,7 @@ import cv2
 import numpy as np
 from PIL import Image
 from tensorflow.keras.models import load_model
-from tensorflow_addons.layers import InstanceNormalization
-
-from networks.layers import AdaIN, AdaptiveAttention
+from networks.layers import AdaIN, AdaptiveAttention, InstanceNormalization
 
 logging.getLogger().setLevel(logging.ERROR)
 
@@ -213,10 +211,23 @@ Remaining arguments consist of:
 ## How to Train
 After you have processed and sharded all your desired datasets, you can train a version of FaceDancer. You still need to the pretrained ArcFace **[here](https://huggingface.co/felixrosberg/ArcFace)**. Secondly you need the expression embedding model used for a rough valdiation **[here](https://huggingface.co/felixrosberg/ExpressionEmbedder)**. Put the *.h5* files into **arcface_model/arcface** and **arcface_model/expface** respectively. You need to specify the path in arguments if put anywhere else. The training scipt has the IFSR margins built-in into the default field of its argument. The training and validation data path uses a specific format: C:/path/to/tfrecords/train/DATASET-NAME_DATA-TYPE_\*-of-\*.records, where DATASET-NAME and DATA-TYPE is the arguments specified in the sharding. For example, DATASET-NAME=vggface2 and DATA-TYPE=train: C:/path/to/tfrecords/train/vggface2_train_\*-of-\*.records.
 
+To split an image dataset before sharding it, run:
+```shell
+python dataset/split_dataset.py --input_dir C:/path/to/images --output_dir C:/path/to/split --train_fraction 0.8 --seed 42
+```
+The command copies the images into `train` and `validation` while preserving
+the source dataset and any nested folder structure.
+
 To train run:
 ```shell
-python train/train.py --data_dir C:/path/to/tfrecords/train/dataset_train_*-of-*.records --eval_dir C:/path/to/tfrecords/val/dataset_val_*-of-*.records
+python train/train.py --data_dir C:/path/to/tfrecords/train/target_train_*-of-*.records --eval_dir C:/path/to/tfrecords/val/target_val_*-of-*.records --source_data_dir C:/path/to/tfrecords/train/source_occluded_train_*-of-*.records --eval_source_dir C:/path/to/tfrecords/val/source_occluded_val_*-of-*.records --hand_task_path C:/path/to/hand_landmarker.task
 ```
+
+The hand-occluded source images must be sharded into separate training and
+validation TFRecords, just like the target dataset. Hand masks are not stored in
+the dataset: MediaPipe detects them online during training and validation.
+For a small smoke test, `dataset_sharding.py --max_images 10` limits a shard to
+ten images and `train.py --iterations_per_epoch 1 --num_epochs 1` runs one step.
 
 You can monitor the training with tensorboard. The `train.py` script will automatically log losses and images into logs/runs/facdancer unless you specify a different log directory and/or log name (facedancer is the default log name). Checkpoints will automatically be saved into ./checkpoints directory unless you specify a different directory. The checkpointing saves the model structures to *.json* and the weights to *.h5* files. If you want the complete model in a single *.h5* file you can rerun `train.py` with **--load XX** and **--export True**. This will save the complete model as a *.h5* file in **exports/facedancer**. XX is the checkpoint weight identifier, which can be found if you go to your checkpoints directory and for example, look up gen/gen_XX.h5.
 
