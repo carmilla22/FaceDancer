@@ -17,8 +17,9 @@ import argparse
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if str(PROJECT_ROOT) in sys.path:
+    sys.path.remove(str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -30,7 +31,13 @@ from networks.discriminator import get_discriminator
 from utils.loss import (perceptual_loss_flagged, perceptual_similarity_loss,
                         fs_reconstruction_loss_l1, occlusion_consistency_loss)
 from utils.hand_occlusion import create_hand_landmarker, detect_hand_mask
-from utils.utils import save_model_internal, load_model_internal, save_training_meta, load_training_meta, log_info
+from train.checkpointing import (
+    final_checkpoint_id, make_training_state, periodic_checkpoint_id,
+    training_epoch_iterations, training_state_after_step,
+    validate_checkpoint_interval, validate_training_state
+)
+from utils.utils import (load_model_internal, load_training_meta, log_info,
+                         save_checkpoint_internal)
 
 
 def build_occlusion_condition(source, source_mask):
@@ -53,6 +60,14 @@ def detect_source_masks(source_batch, hand_landmarker):
     ]).astype(np.float32)
 
 
+def checkpoint_interval_argument(value):
+    try:
+        interval = int(value)
+        return validate_checkpoint_interval(interval)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(str(error))
+
+
 def run(opt):
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
@@ -67,6 +82,11 @@ def run(opt):
             '--eval_source_dir is required and must point to the validation '
             'TFRecords containing hand-occluded source faces.'
         )
+    checkpoint_interval = validate_checkpoint_interval(
+        opt.checkpoint_interval
+    )
+    iteration_num = opt.iterations_per_epoch
+    checkpoint_state = make_training_state(0, 0, 0, iteration_num)
     hand_landmarker = create_hand_landmarker(opt.hand_task_path)
     atexit.register(hand_landmarker.close)
     lr = opt.lr
@@ -110,10 +130,22 @@ def run(opt):
     print("[*] begin training...")
     iteration = 0
     epoch_s = 0
+    epoch_iteration_s = 0
+    last_saved_iteration = None
 
     # load checkpoint
     if opt.load is not None:
         print("[*] loading checkpoint " + str(opt.load) + "...")
+        checkpoint_state = load_training_meta(
+            str(checkpoint_dir / 'state') + os.sep, opt.load
+        )
+        validate_training_state(
+            checkpoint_state,
+            checkpoint_id=opt.load,
+            expected_iterations_per_epoch=iteration_num,
+            num_epochs=opt.num_epochs
+        )
+
         G = load_model_internal(str(checkpoint_dir / 'gen') + os.sep, "gen", opt.load)
         D = load_model_internal(str(checkpoint_dir / 'dis') + os.sep, "dis", opt.load)
 
@@ -123,14 +155,16 @@ def run(opt):
                 'three inputs.'
             )
 
-        checkpoint_state = load_training_meta(
-            str(checkpoint_dir / 'state') + os.sep, opt.load
-        )
-
         epoch_s = checkpoint_state["epoch"]
-        iteration = checkpoint_state["iteration"] + 1
+        epoch_iteration_s = checkpoint_state["epoch_iteration"]
+        iteration = checkpoint_state["iteration"]
+        last_saved_iteration = iteration
 
-        print("[*] continuing at iteration " + str(iteration) + "...")
+        print(
+            "[*] continuing at epoch {}, iteration {} (global {})...".format(
+                epoch_s + 1, epoch_iteration_s + 1, iteration
+            )
+        )
 
         # export the complete model and exit
         if opt.export:
@@ -323,27 +357,29 @@ def run(opt):
         summary_dir.mkdir(parents=True, exist_ok=True)
         summary_writer = tf.summary.create_file_writer(str(summary_dir))
 
-    iteration_num = opt.iterations_per_epoch
     eval_dataset = iter(get_tf_dataset(
         opt.eval_dir, opt.eval_source_dir, opt.image_size,
         opt.eval_batch_size, repeat=True
     ))
 
     # begin/resume training
-    for epoch in range(epoch_s, opt.num_epochs):
+    for epoch, epoch_iterations in training_epoch_iterations(
+            checkpoint_state, opt.num_epochs):
 
         train_dataset = iter(get_tf_dataset(
             opt.data_dir, opt.source_data_dir, opt.image_size, opt.batch_size,
             repeat=True
         ))
 
-        for epoch_iteration in range(iteration_num):
+        for epoch_iteration in epoch_iterations:
             try:
+                summary_iteration = iteration
                 print(
                     '[TRAIN] Epoch {}/{} - iteration {}/{} '
                     '(global {}) started.'.format(
                         epoch + 1, opt.num_epochs,
-                        epoch_iteration + 1, iteration_num, iteration
+                         epoch_iteration + 1, iteration_num,
+                         summary_iteration
                     ),
                     flush=True
                 )
@@ -373,49 +409,49 @@ def run(opt):
                     target_batch, source_batch, source_mask_batch, source_same
                 )
 
-                # logging
-                if iteration % 100 == 0:
-                    log_info(summary_writer, losses, iteration)
+                checkpoint_state = training_state_after_step(
+                    iteration, epoch, epoch_iteration, iteration_num
+                )
+                iteration = checkpoint_state['iteration']
 
-                if (iteration % 100 == 0 and iteration < 10000) or (iteration % 1000 == 0):
-                    log_image(summary_writer, target_batch, source_batch,
-                              source_mask_batch, iteration, 'training/')
-
-                # checkpoint
-                if iteration % 1000 == 0:
-                    chkp_num = str(int(np.floor(iteration / 10000)))
-
-                    save_model_internal(G, str(checkpoint_dir / 'gen') + os.sep, "gen", chkp_num)
-                    save_model_internal(D, str(checkpoint_dir / 'dis') + os.sep, "dis", chkp_num)
-
-                if iteration % 100 == 0:
-                    checkpoint_state = {'iteration': iteration, 'epoch': epoch}
-                    chkp_num = str(int(np.floor(iteration / 10000)))
-                    save_training_meta(
-                        checkpoint_state,
-                        str(checkpoint_dir / 'state') + os.sep,
-                        chkp_num
+                checkpoint_num = periodic_checkpoint_id(
+                    iteration, checkpoint_interval
+                )
+                if checkpoint_num is not None:
+                    save_checkpoint_internal(
+                        G, D, checkpoint_dir, checkpoint_state
+                    )
+                    last_saved_iteration = iteration
+                    print(
+                        '[*] checkpoint {} saved.'.format(checkpoint_num)
                     )
 
+                # logging
+                if summary_iteration % 100 == 0:
+                    log_info(summary_writer, losses, summary_iteration)
+
+                if (summary_iteration % 100 == 0 and summary_iteration < 10000) or (summary_iteration % 1000 == 0):
+                    log_image(summary_writer, target_batch, source_batch,
+                              source_mask_batch, summary_iteration,
+                              'training/')
+
                 # soft evaluation
-                if iteration % 100 == 0:
+                if summary_iteration % 100 == 0:
                     e_target, e_source = eval_dataset.__next__()
                     e_source_mask = detect_source_masks(
                         e_source.numpy(), hand_landmarker
                     )
                     e_losses = test_step(e_target, e_source, e_source_mask)
 
-                    log_info(summary_writer, e_losses, iteration)
+                    log_info(summary_writer, e_losses, summary_iteration)
 
-                    if (iteration % 100 == 0 and iteration < 10000) or (iteration % 1000 == 0):
+                    if (summary_iteration % 100 == 0 and summary_iteration < 10000) or (summary_iteration % 1000 == 0):
                         v_t_v, v_s_v = eval_dataset.__next__()
                         v_source_mask = detect_source_masks(
                             v_s_v.numpy(), hand_landmarker
                         )
                         log_image(summary_writer, v_t_v, v_s_v,
-                                  v_source_mask, iteration)
-
-                iteration += 1
+                                  v_source_mask, summary_iteration)
                 print(
                     '[TRAIN] Epoch {}/{} - iteration {}/{} completed.'.format(
                         epoch + 1, opt.num_epochs,
@@ -427,23 +463,21 @@ def run(opt):
                 print(e)
                 raise
 
-    # Always preserve the final weights, including short smoke-test runs that
-    # finish before the periodic checkpoint interval.
-    final_checkpoint_num = str(iteration)
-    save_model_internal(
-        G, str(checkpoint_dir / 'gen') + os.sep,
-        "gen", final_checkpoint_num
+    # Preserve short runs while avoiding a duplicate save at an interval.
+    final_checkpoint_num = final_checkpoint_id(
+        iteration, last_saved_iteration
     )
-    save_model_internal(
-        D, str(checkpoint_dir / 'dis') + os.sep,
-        "dis", final_checkpoint_num
-    )
-    save_training_meta(
-        {'iteration': iteration, 'epoch': opt.num_epochs},
-        str(checkpoint_dir / 'state') + os.sep,
-        final_checkpoint_num
-    )
-    print('[*] final checkpoint saved as {}.'.format(final_checkpoint_num))
+    if final_checkpoint_num is not None:
+        save_checkpoint_internal(G, D, checkpoint_dir, checkpoint_state)
+        last_saved_iteration = iteration
+        print('[*] final checkpoint saved as {}.'.format(
+            final_checkpoint_num
+        ))
+    else:
+        final_checkpoint_num = str(iteration)
+        print('[*] final checkpoint {} was already saved.'.format(
+            final_checkpoint_num
+        ))
     print('[OUTPUT] Generator: {}'.format(
         checkpoint_dir / 'gen' / ('gen_' + final_checkpoint_num + '.h5')
     ))
@@ -473,7 +507,7 @@ if __name__ == '__main__':
                         help='int of number to load checkpoint weights.')
     parser.add_argument('--export', type=bool,
                         default=False,
-                        help='exports the generator to a complete h5 file and exits the training script.')
+                        help='exports the generator as a TensorFlow SavedModel directory and exits')
 
     # general
     parser.add_argument('--batch_size', type=int, default=10,
@@ -584,6 +618,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--chkp_dir', type=str, default='../checkpoints/',
                         help='checkpoint directory (will use same name as log_name!)')
+    parser.add_argument('--checkpoint_interval',
+                        type=checkpoint_interval_argument, default=10000,
+                        help='completed iterations between coherent checkpoints (default: 10000)')
     parser.add_argument('--result_dir', type=str, default='../results/',
                         help='test results directory (will use same name as log_name!)')
 

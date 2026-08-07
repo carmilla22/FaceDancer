@@ -2,6 +2,9 @@ import json
 import numpy as np
 import cv2
 import math
+import os
+import tempfile
+from pathlib import Path
 
 import tensorflow as tf
 from tensorflow.keras.models import model_from_json
@@ -15,12 +18,86 @@ from skimage.color import rgb2yuv, yuv2rgb
 from PIL import Image
 
 
+def _atomic_replace(destination, write_temporary_file):
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(destination.parent),
+        prefix='.' + destination.stem + '.',
+        suffix=destination.suffix
+    )
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+
+    try:
+        write_temporary_file(temporary_path)
+        with temporary_path.open('rb') as temporary_file:
+            os.fsync(temporary_file.fileno())
+        os.replace(str(temporary_path), str(destination))
+        directory_descriptor = os.open(
+            str(destination.parent), os.O_RDONLY | os.O_DIRECTORY
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def save_model_internal(model, path, name, num):
     json_model = model.to_json()
-    with open(path + name + '.json', "w") as json_file:
-        json_file.write(json_model)
+    model_dir = Path(path)
+    architecture_path = model_dir / (name + '.json')
+    weights_path = model_dir / (name + '_' + str(num) + '.h5')
 
-    model.save_weights(path + name + '_' + str(num) + '.h5')
+    def write_architecture(temporary_path):
+        with temporary_path.open('w') as json_file:
+            json_file.write(json_model)
+            json_file.flush()
+            os.fsync(json_file.fileno())
+
+    def write_weights(temporary_path):
+        model.save_weights(str(temporary_path))
+
+    if architecture_path.exists():
+        if architecture_path.read_text() != json_model:
+            raise ValueError(
+                'Model architecture does not match the existing {}.json; '
+                'use a new log_name.'.format(name)
+            )
+    else:
+        _atomic_replace(architecture_path, write_architecture)
+    _atomic_replace(weights_path, write_weights)
+
+
+def save_checkpoint_internal(generator, discriminator, checkpoint_dir,
+                             state_dict):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_num = str(state_dict['iteration'])
+    state_path = checkpoint_dir / 'state' / (checkpoint_num + '.json')
+    if state_path.exists():
+        raise FileExistsError(
+            'Checkpoint {} already exists; load the latest checkpoint or '
+            'use a new log_name.'.format(checkpoint_num)
+        )
+
+    save_model_internal(
+        generator, str(checkpoint_dir / 'gen') + os.sep,
+        'gen', checkpoint_num
+    )
+    save_model_internal(
+        discriminator, str(checkpoint_dir / 'dis') + os.sep,
+        'dis', checkpoint_num
+    )
+    # The state file is the completeness marker for the weight pair.
+    save_training_meta(
+        state_dict, str(checkpoint_dir / 'state') + os.sep,
+        checkpoint_num
+    )
+
+    return checkpoint_num
 
 
 def load_model_internal(path, name, num):
@@ -42,8 +119,15 @@ def load_model_internal(path, name, num):
 
 
 def save_training_meta(state_dict, path, num):
-    with open(path + str(num) + '.json', 'w') as json_file:
-        json.dump(state_dict, json_file, indent=2)
+    state_path = Path(path) / (str(num) + '.json')
+
+    def write_state(temporary_path):
+        with temporary_path.open('w') as json_file:
+            json.dump(state_dict, json_file, indent=2)
+            json_file.flush()
+            os.fsync(json_file.fileno())
+
+    _atomic_replace(state_path, write_state)
 
 
 def load_training_meta(path, num):

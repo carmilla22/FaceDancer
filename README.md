@@ -198,38 +198,253 @@ Remaining arguments consist of:
 ### Sharding the Data
 This step will convert the image data to tfrecords. If using large datasets such as VGGFace2 this will take some time. However, the training code is designed around this step and it speeds up training significantly. The expected folder structure is DATASET/subfolders/im_0, ..., im_x. If using an image dataset not divided into subfolders you can put the DATASET folder inside a parent folder like this: PARENT_FOLDER/DATASET/im_0, ..., im_x. Then specify the PARENT_FOLDER as the --data_dir and the DATASET will be treated as a subfolder.
 
-To shard the data run:
+Training uses four independently shuffled TFRecord sets: target training,
+target validation, hand-occluded source training, and hand-occluded source
+validation. The following commands write the complete datasets with 1,000
+images per shard. `--max_images` is intentionally omitted.
+
 ```shell
-python dataset/dataset_sharding.py --data_dir path/to/DATASET --target_dir path/to/tfrecords/dir --data_name dataset_name
+devenv shell -- python dataset/dataset_sharding.py \
+  --data_dir /srv/facedancer/images/target/train \
+  --target_dir /srv/facedancer/tfrecords/target/train \
+  --data_name target --data_type train --num_shards 1000
+
+devenv shell -- python dataset/dataset_sharding.py \
+  --data_dir /srv/facedancer/images/target/validation \
+  --target_dir /srv/facedancer/tfrecords/target/validation \
+  --data_name target --data_type validation --num_shards 1000
+
+devenv shell -- python dataset/dataset_sharding.py \
+  --data_dir /srv/facedancer/images/source-occluded/train \
+  --target_dir /srv/facedancer/tfrecords/source-occluded/train \
+  --data_name source_occluded --data_type train --num_shards 1000
+
+devenv shell -- python dataset/dataset_sharding.py \
+  --data_dir /srv/facedancer/images/source-occluded/validation \
+  --target_dir /srv/facedancer/tfrecords/source-occluded/validation \
+  --data_name source_occluded --data_type validation --num_shards 1000
 ```
 
 Remaining arguments consist of:
 - **--data_type, default="train"** - *Identifier for the output file names.*
 - **--shuffle, default=True** - *Where to shuffle the order of sharding the images.*
-- **--num_shards, default=1000** - *How many shards to divide the data into.*
+- **--num_shards, default=1000** - *Number of images written to each shard (the argument name is historical).*
+- **--max_images, default=None** - *Optional image limit for smoke-test shards; omit it for full datasets.*
 
 ## How to Train
-After you have processed and sharded all your desired datasets, you can train a version of FaceDancer. You still need to the pretrained ArcFace **[here](https://huggingface.co/felixrosberg/ArcFace)**. Secondly you need the expression embedding model used for a rough valdiation **[here](https://huggingface.co/felixrosberg/ExpressionEmbedder)**. Put the *.h5* files into **arcface_model/arcface** and **arcface_model/expface** respectively. You need to specify the path in arguments if put anywhere else. The training scipt has the IFSR margins built-in into the default field of its argument. The training and validation data path uses a specific format: C:/path/to/tfrecords/train/DATASET-NAME_DATA-TYPE_\*-of-\*.records, where DATASET-NAME and DATA-TYPE is the arguments specified in the sharding. For example, DATASET-NAME=vggface2 and DATA-TYPE=train: C:/path/to/tfrecords/train/vggface2_train_\*-of-\*.records.
+After processing and sharding the datasets, download the pretrained ArcFace
+model **[here](https://huggingface.co/felixrosberg/ArcFace)** and the expression
+embedding model **[here](https://huggingface.co/felixrosberg/ExpressionEmbedder)**.
+The commands below assume they are stored under `/srv/facedancer/models` and
+that this repository is the current directory. Replace `/srv/facedancer` with
+the persistent absolute data path on the training host.
+
+Validate the frozen native environment and a real TensorFlow GPU operation
+before training:
+
+```shell
+devenv shell -- fd-check-env
+```
+
+The command must report the NVIDIA GPU and a successful GPU matrix
+multiplication. On a host without an NVIDIA device, imports can be checked but
+GPU acceptance cannot be completed.
 
 To split an image dataset before sharding it, run:
 ```shell
-python dataset/split_dataset.py --input_dir C:/path/to/images --output_dir C:/path/to/split --train_fraction 0.8 --seed 42
+devenv shell -- python dataset/split_dataset.py \
+  --input_dir /srv/facedancer/images/all \
+  --output_dir /srv/facedancer/images/split \
+  --train_fraction 0.8 --seed 42
 ```
 The command copies the images into `train` and `validation` while preserving
 the source dataset and any nested folder structure.
 
-To train run:
-```shell
-python train/train.py --data_dir C:/path/to/tfrecords/train/target_train_*-of-*.records --eval_dir C:/path/to/tfrecords/val/target_val_*-of-*.records --source_data_dir C:/path/to/tfrecords/train/source_occluded_train_*-of-*.records --eval_source_dir C:/path/to/tfrecords/val/source_occluded_val_*-of-*.records --hand_task_path C:/path/to/hand_landmarker.task
+The hand-occluded source images must be sharded into separate training and
+validation TFRecords, just like the target dataset. Hand masks are not stored
+in the dataset: MediaPipe detects them online during training and validation.
+The source and target streams are shuffled and repeated independently; they do
+not need identity pairing.
+
+Training batches use `drop_remainder=True`. Configure one exhaustive epoch as:
+
+```text
+iterations_per_epoch = training_images // batch_size
 ```
 
-The hand-occluded source images must be sharded into separate training and
-validation TFRecords, just like the target dataset. Hand masks are not stored in
-the dataset: MediaPipe detects them online during training and validation.
-For a small smoke test, `dataset_sharding.py --max_images 10` limits a shard to
-ten images and `train.py --iterations_per_epoch 1 --num_epochs 1` runs one step.
+For 30,000 images per training stream, use 30,000 iterations at batch size 1
+or 15,000 iterations at batch size 2. A non-divisible final partial batch is
+not consumed. Start with batch size 1 on a 24 GB GPU and only increase it after
+measuring peak memory use.
 
-You can monitor the training with tensorboard. The `train.py` script will automatically log losses and images into logs/runs/facdancer unless you specify a different log directory and/or log name (facedancer is the default log name). Checkpoints will automatically be saved into ./checkpoints directory unless you specify a different directory. The checkpointing saves the model structures to *.json* and the weights to *.h5* files. If you want the complete model in a single *.h5* file you can rerun `train.py` with **--load XX** and **--export True**. This will save the complete model as a *.h5* file in **exports/facedancer**. XX is the checkpoint weight identifier, which can be found if you go to your checkpoints directory and for example, look up gen/gen_XX.h5.
+### Checkpoint and Resume Acceptance
+
+First run one 10-step epoch. This saves completed-iteration checkpoint `10`:
+
+```shell
+devenv shell -- python train/train.py \
+  --data_dir '/srv/facedancer/tfrecords/target/train/target_train_*-of-*.records' \
+  --source_data_dir '/srv/facedancer/tfrecords/source-occluded/train/source_occluded_train_*-of-*.records' \
+  --eval_dir '/srv/facedancer/tfrecords/target/validation/target_validation_*-of-*.records' \
+  --eval_source_dir '/srv/facedancer/tfrecords/source-occluded/validation/source_occluded_validation_*-of-*.records' \
+  --arcface_path /srv/facedancer/models/ArcFace-Res50.h5 \
+  --eval_model_expface /srv/facedancer/models/ExpressionEmbedder-B0.h5 \
+  --hand_task_path /srv/facedancer/models/hand_landmarker.task \
+  --batch_size 1 --eval_batch_size 1 \
+  --iterations_per_epoch 10 --num_epochs 1 \
+  --checkpoint_interval 10 --device_id 0 \
+  --log_dir /srv/facedancer/logs \
+  --chkp_dir /srv/facedancer/checkpoints \
+  --log_name soa-checkpoint-acceptance
+```
+
+Then resume the same run with a total target of two epochs:
+
+```shell
+devenv shell -- python train/train.py \
+  --data_dir '/srv/facedancer/tfrecords/target/train/target_train_*-of-*.records' \
+  --source_data_dir '/srv/facedancer/tfrecords/source-occluded/train/source_occluded_train_*-of-*.records' \
+  --eval_dir '/srv/facedancer/tfrecords/target/validation/target_validation_*-of-*.records' \
+  --eval_source_dir '/srv/facedancer/tfrecords/source-occluded/validation/source_occluded_validation_*-of-*.records' \
+  --arcface_path /srv/facedancer/models/ArcFace-Res50.h5 \
+  --eval_model_expface /srv/facedancer/models/ExpressionEmbedder-B0.h5 \
+  --hand_task_path /srv/facedancer/models/hand_landmarker.task \
+  --batch_size 1 --eval_batch_size 1 \
+  --iterations_per_epoch 10 --num_epochs 2 \
+  --checkpoint_interval 10 --device_id 0 \
+  --log_dir /srv/facedancer/logs \
+  --chkp_dir /srv/facedancer/checkpoints \
+  --log_name soa-checkpoint-acceptance \
+  --load 10
+```
+
+The resumed run starts at epoch 2, epoch iteration 1, global completed
+iteration 10. It performs exactly 10 more steps and creates:
+
+```text
+/srv/facedancer/checkpoints/soa-checkpoint-acceptance/gen/gen_20.h5
+/srv/facedancer/checkpoints/soa-checkpoint-acceptance/dis/dis_20.h5
+/srv/facedancer/checkpoints/soa-checkpoint-acceptance/state/20.json
+```
+
+### Full-Dataset GPU Validation
+
+After checkpoint/resume acceptance, run one complete shuffled 30,000-image
+pass before starting a multi-epoch production session:
+
+```shell
+devenv shell -- python train/train.py \
+  --data_dir '/srv/facedancer/tfrecords/target/train/target_train_*-of-*.records' \
+  --source_data_dir '/srv/facedancer/tfrecords/source-occluded/train/source_occluded_train_*-of-*.records' \
+  --eval_dir '/srv/facedancer/tfrecords/target/validation/target_validation_*-of-*.records' \
+  --eval_source_dir '/srv/facedancer/tfrecords/source-occluded/validation/source_occluded_validation_*-of-*.records' \
+  --arcface_path /srv/facedancer/models/ArcFace-Res50.h5 \
+  --eval_model_expface /srv/facedancer/models/ExpressionEmbedder-B0.h5 \
+  --hand_task_path /srv/facedancer/models/hand_landmarker.task \
+  --batch_size 1 --eval_batch_size 1 \
+  --iterations_per_epoch 30000 --num_epochs 1 \
+  --checkpoint_interval 10000 --device_id 0 \
+  --log_dir /srv/facedancer/logs \
+  --chkp_dir /srv/facedancer/checkpoints \
+  --log_name soa-gpu-validation
+```
+
+This creates checkpoints `10000`, `20000`, and `30000`; the final checkpoint
+at the interval boundary is not written twice.
+
+### Configurable Production Run
+
+Set the image count, batch size, and operator-chosen total epoch target. If the
+batch size changes for a fresh run, recalculate `STEPS_PER_EPOCH`.
+
+```shell
+export TRAIN_IMAGES=30000
+export BATCH_SIZE=1
+export NUM_EPOCHS=10
+export STEPS_PER_EPOCH=$((TRAIN_IMAGES / BATCH_SIZE))
+export RUN_NAME=soa-production
+
+mkdir -p /srv/facedancer/logs/${RUN_NAME}
+
+tmux new-session -d -s facedancer-production \
+  "devenv shell -- python train/train.py \
+    --data_dir '/srv/facedancer/tfrecords/target/train/target_train_*-of-*.records' \
+    --source_data_dir '/srv/facedancer/tfrecords/source-occluded/train/source_occluded_train_*-of-*.records' \
+    --eval_dir '/srv/facedancer/tfrecords/target/validation/target_validation_*-of-*.records' \
+    --eval_source_dir '/srv/facedancer/tfrecords/source-occluded/validation/source_occluded_validation_*-of-*.records' \
+    --arcface_path /srv/facedancer/models/ArcFace-Res50.h5 \
+    --eval_model_expface /srv/facedancer/models/ExpressionEmbedder-B0.h5 \
+    --hand_task_path /srv/facedancer/models/hand_landmarker.task \
+    --batch_size ${BATCH_SIZE} --eval_batch_size 1 \
+    --iterations_per_epoch ${STEPS_PER_EPOCH} --num_epochs ${NUM_EPOCHS} \
+    --checkpoint_interval 10000 --device_id 0 \
+    --log_dir /srv/facedancer/logs \
+    --chkp_dir /srv/facedancer/checkpoints \
+    --log_name ${RUN_NAME} \
+    2>&1 | tee /srv/facedancer/logs/${RUN_NAME}/training.log"
+```
+
+Attach to the native session with `tmux attach -t facedancer-production`.
+Monitor TensorBoard separately:
+
+```shell
+devenv shell -- tensorboard \
+  --logdir /srv/facedancer/logs/soa-production \
+  --host 0.0.0.0 --port 6006
+```
+
+To resume production, set `LOAD` to a completed checkpoint ID and set
+`NUM_EPOCHS` to the new total epoch target, not the number of additional
+epochs. Keep `STEPS_PER_EPOCH` exactly equal to the saved
+`iterations_per_epoch`:
+
+```shell
+export LOAD=30000
+export TRAIN_IMAGES=30000
+export BATCH_SIZE=1
+export NUM_EPOCHS=10
+export STEPS_PER_EPOCH=$((TRAIN_IMAGES / BATCH_SIZE))
+export RUN_NAME=soa-production
+
+tmux new-session -d -s facedancer-production-resume \
+  "devenv shell -- python train/train.py \
+    --data_dir '/srv/facedancer/tfrecords/target/train/target_train_*-of-*.records' \
+    --source_data_dir '/srv/facedancer/tfrecords/source-occluded/train/source_occluded_train_*-of-*.records' \
+    --eval_dir '/srv/facedancer/tfrecords/target/validation/target_validation_*-of-*.records' \
+    --eval_source_dir '/srv/facedancer/tfrecords/source-occluded/validation/source_occluded_validation_*-of-*.records' \
+    --arcface_path /srv/facedancer/models/ArcFace-Res50.h5 \
+    --eval_model_expface /srv/facedancer/models/ExpressionEmbedder-B0.h5 \
+    --hand_task_path /srv/facedancer/models/hand_landmarker.task \
+    --batch_size ${BATCH_SIZE} --eval_batch_size 1 \
+    --iterations_per_epoch ${STEPS_PER_EPOCH} --num_epochs ${NUM_EPOCHS} \
+    --checkpoint_interval 10000 --device_id 0 \
+    --log_dir /srv/facedancer/logs \
+    --chkp_dir /srv/facedancer/checkpoints \
+    --log_name ${RUN_NAME} --load ${LOAD} \
+    2>&1 | tee -a /srv/facedancer/logs/${RUN_NAME}/training.log"
+```
+
+Checkpoint IDs are exact completed iteration counts. Each coherent checkpoint
+contains shared `gen/gen.json` and `dis/dis.json` architecture files, ID-scoped
+`gen/gen_<ID>.h5` and `dis/dis_<ID>.h5` weights, and
+`state/<ID>.json` loop metadata under the selected `log_name`. The state file is
+written last and marks a complete generator/discriminator pair. Legacy state
+files without the versioned completed-iteration schema are intentionally not
+resumable because their periodic and final iteration meanings conflict. A
+completed checkpoint ID is immutable; resume from the latest checkpoint or use
+a distinct `log_name` rather than overwriting an existing ID. The shared model
+architecture files are also immutable after their first save, so every H5 ID
+under a run remains loadable with the adjacent JSON architecture.
+
+Resume restores H5 weights and the next loop position. Adam optimizers are
+reconstructed without their moment estimates or optimizer iteration counters;
+the learning-rate position is reconstructed from the completed global
+iteration. Dataset iterators, shuffle order, and random-number state are also
+recreated, so resume is step-coherent but not bit-for-bit deterministic.
+
+To export a loaded generator, rerun `train.py` with `--load <ID> --export True`.
+Export writes a TensorFlow SavedModel directory at
+`exports/<log_name>/facedancer_<ID>`, not a single H5 file.
 
 
 ## PyTorch Implementation
