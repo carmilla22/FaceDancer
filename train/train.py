@@ -325,7 +325,8 @@ def run(opt):
 
     iteration_num = opt.iterations_per_epoch
     eval_dataset = iter(get_tf_dataset(
-        opt.eval_dir, opt.eval_source_dir, opt.image_size, 10, repeat=True
+        opt.eval_dir, opt.eval_source_dir, opt.image_size,
+        opt.eval_batch_size, repeat=True
     ))
 
     # begin/resume training
@@ -477,6 +478,8 @@ if __name__ == '__main__':
     # general
     parser.add_argument('--batch_size', type=int, default=10,
                         help='batch size')
+    parser.add_argument('--eval_batch_size', type=int, default=1,
+                        help='evaluation batch size')
     parser.add_argument('--image_size', type=int, default=256,
                         help='image size')
     parser.add_argument('--shift', type=float, default=0.5,

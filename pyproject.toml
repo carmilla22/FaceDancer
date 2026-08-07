@@ -1,0 +1,33 @@
+[project]
+name = "facedancer-environment"
+version = "0.1.0"
+requires-python = "==3.11.*"
+dependencies = [
+  "fastapi==0.110.0",
+  "h5py==3.10.0",
+  "imageio==2.34.0",
+  "imageio-ffmpeg==0.4.9",
+  "mediapipe==0.10.11",
+  "moviepy==1.0.3",
+  "numpy==1.26.4",
+  "opencv-contrib-python-headless==4.9.0.80",
+  "pillow==10.2.0",
+  "protobuf==3.20.3",
+  "python-multipart==0.0.9",
+  "requests==2.31.0",
+  "scikit-image==0.22.0",
+  "scipy==1.11.4",
+  "tensorflow[and-cuda]==2.15.1",
+  "tf-keras==2.15.1",
+  "tqdm==4.66.2",
+  "uvicorn==0.27.1",
+]
+
+[tool.uv]
+package = false
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+exclude-dependencies = [
+  { package = { name = "mediapipe", version = "0.10.11" }, dependencies = ["jax", "jaxlib", "opencv-contrib-python", "torch"] },
+]
