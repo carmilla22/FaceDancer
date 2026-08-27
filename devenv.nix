@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, inputs,... }:
 
 {
   packages = with pkgs; [
@@ -36,6 +36,12 @@
     KERAS_HOME = "${config.env.DEVENV_STATE}/keras";
     FACEDANCER_ROOT = config.devenv.root;
   };
+
+  files."arcface_model/ArcFace-Res50.h5".source = inputs.arcface;
+  files."expressionembedder_model/ExpressionEmbedder-B0.h5".source = inputs.expressionembedder;
+  files."retinaface/RetinaFace-Res50.h5".source = inputs.retinaface;
+  files."assets/dataset/hands".source = inputs.hands;
+  files."assets/dataset/celeb".source = inputs.celeb;
 
   enterShell = ''
     # VIRTUAL_ENV is exported after enterShell by devenv, but the managed

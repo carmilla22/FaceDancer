@@ -1,5 +1,30 @@
 {
   "nodes": {
+    "arcface": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-x6WbYR5HIwK0xzlI64a7gIldl0174vLf+L0lmJcue/s=",
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/ArcFace/resolve/6411a8a813c8bd0b31facd917b5b9aa31ff90789/ArcFace-Res50.h5"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/ArcFace/resolve/6411a8a813c8bd0b31facd917b5b9aa31ff90789/ArcFace-Res50.h5"
+      }
+    },
+    "celeb": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1557717758,
+        "narHash": "sha256-QyrsSJqLQumdwOPcSQFb2ZI0xBjcgNwBAAxopOAAw+E=",
+        "type": "tarball",
+        "url": "https://huggingface.co/datasets/liusq/CelebAMask-HQ/resolve/9cd422d28a64c1f5e7144f3a5a398b78bbb9ad11/CelebAMask-HQ.zip"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://huggingface.co/datasets/liusq/CelebAMask-HQ/resolve/9cd422d28a64c1f5e7144f3a5a398b78bbb9ad11/CelebAMask-HQ.zip"
+      }
+    },
     "devenv": {
       "locked": {
         "dir": "src/modules",
@@ -17,6 +42,18 @@
         "type": "github"
       }
     },
+    "expressionembedder": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-3p3YSv9fX8rXKV65CWVLr5AgnpRy8+DLRIbB3exnTbc=",
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/ExpressionEmbedder/resolve/7bf3fb5305ac1b6433656fd0317277839fe064c6/ExpressionEmbedder-B0.h5"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/ExpressionEmbedder/resolve/7bf3fb5305ac1b6433656fd0317277839fe064c6/ExpressionEmbedder-B0.h5"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -31,6 +68,19 @@
         "owner": "edolstra",
         "repo": "flake-compat",
         "type": "github"
+      }
+    },
+    "hands": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1507016734,
+        "narHash": "sha256-YKuf9Z5eqISt5Uq7LAs/qbtK3aeUn/zZnYPQeGdGaUU=",
+        "type": "tarball",
+        "url": "https://drive.usercontent.google.com/download?confirm=t&export=download&id=1KcMYcNJgtK1zZvfl_9sTqnyBUTri2aP2"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://drive.usercontent.google.com/download?confirm=t&export=download&id=1KcMYcNJgtK1zZvfl_9sTqnyBUTri2aP2"
       }
     },
     "nixpkgs": {
@@ -90,11 +140,28 @@
         "type": "github"
       }
     },
+    "retinaface": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-Zuy7312qlS0JkFXmpmrDbaLufdYfhF57QyZP7lgcNmk=",
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/RetinaFace/resolve/5ba7297274adc176a0bc60193e1290cd4f944b58/RetinaFace-Res50.h5"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://huggingface.co/felixrosberg/RetinaFace/resolve/5ba7297274adc176a0bc60193e1290cd4f944b58/RetinaFace-Res50.h5"
+      }
+    },
     "root": {
       "inputs": {
+        "arcface": "arcface",
+        "celeb": "celeb",
         "devenv": "devenv",
+        "expressionembedder": "expressionembedder",
+        "hands": "hands",
         "nixpkgs": "nixpkgs",
-        "nixpkgs-python": "nixpkgs-python"
+        "nixpkgs-python": "nixpkgs-python",
+        "retinaface": "retinaface"
       }
     }
   },
