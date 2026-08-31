@@ -15,9 +15,12 @@ inputs:
   expressionembedder:
     url: "file+https://huggingface.co/felixrosberg/ExpressionEmbedder/resolve/7bf3fb5305ac1b6433656fd0317277839fe064c6/ExpressionEmbedder-B0.h5"
     flake: false
-  hands:
-    url: "tarball+https://drive.usercontent.google.com/download?id=1KcMYcNJgtK1zZvfl_9sTqnyBUTri2aP2&export=download&confirm=t"
-    flake: false
   celeb:
     url: "tarball+https://huggingface.co/datasets/liusq/CelebAMask-HQ/resolve/9cd422d28a64c1f5e7144f3a5a398b78bbb9ad11/CelebAMask-HQ.zip"
+    flake: false
+  hands:
+    url: "tarball+https://huggingface.co/datasets/Rmilla/Hands/resolve/main/Hands.zip"
+    flake: false
+  hands_masks:
+    url: "tarball+https://huggingface.co/datasets/Rmilla/Hands/resolve/main/11k-hands_masks.zip"
     flake: false

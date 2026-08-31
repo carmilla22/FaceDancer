@@ -76,11 +76,24 @@
         "lastModified": 1507016734,
         "narHash": "sha256-YKuf9Z5eqISt5Uq7LAs/qbtK3aeUn/zZnYPQeGdGaUU=",
         "type": "tarball",
-        "url": "https://drive.usercontent.google.com/download?confirm=t&export=download&id=1KcMYcNJgtK1zZvfl_9sTqnyBUTri2aP2"
+        "url": "https://huggingface.co/datasets/Rmilla/Hands/resolve/main/Hands.zip"
       },
       "original": {
         "type": "tarball",
-        "url": "https://drive.usercontent.google.com/download?confirm=t&export=download&id=1KcMYcNJgtK1zZvfl_9sTqnyBUTri2aP2"
+        "url": "https://huggingface.co/datasets/Rmilla/Hands/resolve/main/Hands.zip"
+      }
+    },
+    "hands_masks": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1650045634,
+        "narHash": "sha256-TzzQ2XOcCxtmXYKpo8+kc1pgnLlv2QUG2xk2yvXTZIs=",
+        "type": "tarball",
+        "url": "https://huggingface.co/datasets/Rmilla/Hands/resolve/main/11k-hands_masks.zip"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://huggingface.co/datasets/Rmilla/Hands/resolve/main/11k-hands_masks.zip"
       }
     },
     "nixpkgs": {
@@ -159,6 +172,7 @@
         "devenv": "devenv",
         "expressionembedder": "expressionembedder",
         "hands": "hands",
+        "hands_masks": "hands_masks",
         "nixpkgs": "nixpkgs",
         "nixpkgs-python": "nixpkgs-python",
         "retinaface": "retinaface"
