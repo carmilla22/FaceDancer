@@ -78,8 +78,11 @@ class AdaIN(Layer):
         self.w_channels = w_shape[-1]
         self.x_channels = x_shape[-1]
 
-        self.dense_1 = Dense(self.x_channels)
-        self.dense_2 = Dense(self.x_channels)
+        # Names must be explicit: auto-generated names depend on process-global
+        # counters and can collide after a model_from_json round-trip, which
+        # breaks HDF5 weight saving ("name already exists").
+        self.dense_1 = Dense(self.x_channels, name=self.name + '_dense_1')
+        self.dense_2 = Dense(self.x_channels, name=self.name + '_dense_2')
 
     def call(self, inputs):
         x, w = inputs
@@ -107,8 +110,8 @@ class AdaIN1D(Layer):
         self.w_channels = w_shape[-1]
         self.x_channels = x_shape[-1]
 
-        self.dense_1 = Dense(self.x_channels)
-        self.dense_2 = Dense(self.x_channels)
+        self.dense_1 = Dense(self.x_channels, name=self.name + '_dense_1')
+        self.dense_2 = Dense(self.x_channels, name=self.name + '_dense_2')
 
     def call(self, inputs):
         x, w = inputs

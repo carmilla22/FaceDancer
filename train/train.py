@@ -102,10 +102,11 @@ def run(opt):
     ifsr_weight = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     p_blocks = opt.p_blocks
 
-    G = get_generator(up_types=opt.up_types,
-                      mapping_depth=opt.mapping_depth,
-                      mapping_size=opt.mapping_size)
-    D = get_discriminator()
+    if opt.load is None:
+        G = get_generator(up_types=opt.up_types,
+                          mapping_depth=opt.mapping_depth,
+                          mapping_size=opt.mapping_size)
+        D = get_discriminator()
 
     # loss weights
     r_lambda = opt.r_lambda

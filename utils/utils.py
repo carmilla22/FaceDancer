@@ -46,7 +46,22 @@ def _atomic_replace(destination, write_temporary_file):
             temporary_path.unlink()
 
 
+def _check_unique_weight_names(model):
+    seen = set()
+    for weight in model._trainable_weights + model._non_trainable_weights:
+        if weight.name in seen:
+            raise ValueError(
+                'Model "{}" has duplicate weight name "{}"; HDF5 saving '
+                'requires unique weight names. Give sub-layers created in '
+                'build() explicit names derived from the parent layer name '
+                '(see AdaIN in networks/layers.py).'.format(
+                    model.name, weight.name)
+            )
+        seen.add(weight.name)
+
+
 def save_model_internal(model, path, name, num):
+    _check_unique_weight_names(model)
     json_model = model.to_json()
     model_dir = Path(path)
     architecture_path = model_dir / (name + '.json')

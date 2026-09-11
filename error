@@ -1,0 +1,25 @@
+Traceback (most recent call last):
+  File "/home/calcolalo/Downloads/FaceDancer/train/train.py", line 629, in <module>
+    run(opt)
+  File "/home/calcolalo/Downloads/FaceDancer/train/train.py", line 421, in run
+    save_checkpoint_internal(
+  File "/home/calcolalo/Downloads/FaceDancer/utils/utils.py", line 86, in save_checkpoint_internal
+    save_model_internal(
+  File "/home/calcolalo/Downloads/FaceDancer/utils/utils.py", line 72, in save_model_internal
+    _atomic_replace(weights_path, write_weights)
+  File "/home/calcolalo/Downloads/FaceDancer/utils/utils.py", line 33, in _atomic_replace
+    write_temporary_file(temporary_path)
+  File "/home/calcolalo/Downloads/FaceDancer/utils/utils.py", line 62, in write_weights
+    model.save_weights(str(temporary_path))
+  File "/home/calcolalo/Downloads/FaceDancer/.devenv/state/venv/lib/python3.11/site-packages/tf_keras/src/utils/traceback_utils.py", line 70, in error_handler
+    raise e.with_traceback(filtered_tb) from None
+  File "/home/calcolalo/Downloads/FaceDancer/.devenv/state/venv/lib/python3.11/site-packages/h5py/_hl/group.py", line 183, in create_dataset
+    dsid = dataset.make_new_dset(group, shape, dtype, data, name, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/calcolalo/Downloads/FaceDancer/.devenv/state/venv/lib/python3.11/site-packages/h5py/_hl/dataset.py", line 163, in make_new_dset
+    dset_id = h5d.create(parent.id, name, tid, sid, dcpl=dcpl, dapl=dapl)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "h5py/_objects.pyx", line 54, in h5py._objects.with_phil.wrapper
+  File "h5py/_objects.pyx", line 55, in h5py._objects.with_phil.wrapper
+  File "h5py/h5d.pyx", line 137, in h5py.h5d.create
+ValueError: Unable to synchronously create dataset (name already exists)

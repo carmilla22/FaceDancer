@@ -2,6 +2,9 @@
 ```bash
 python dataset/split_dataset.py --input_dir "assets/source" --output_dir "assets/source_splitted"
 ```
+```bash
+python generate_hand_occluded_faces.py --faces-dir assets/dataset/celeb/CelebA-HQ-img --masks-dir assets/dataset/hands_masks --hands-dir assets/dataset/hands --output assets/dataset/celeb_occluded --num-faces 0 --variants-per-face 4 --overwrite
+```
 2. Split target dataset
 ```bash
 python dataset/split_dataset.py --input_dir "assets/target" --output_dir "assets/target_splitted"
