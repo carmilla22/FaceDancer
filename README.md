@@ -67,12 +67,6 @@ Run these commands from the project root with the devenv environment loaded.
 
 ### 5.1. Split the Source Dataset
 
-```bash
-python dataset/split_dataset.py \
-  --input_dir "assets/source" \
-  --output_dir "assets/source_splitted"
-```
-
 Generate the hand-occluded source images:
 
 ```bash
@@ -82,31 +76,46 @@ python generate_hand_occluded_faces.py \
   --hands-dir assets/dataset/hands \
   --output assets/dataset/celeb_occluded \
   --num-faces 0 \
-  --variants-per-face 4 \
+  --variants-per-face 1 \
   --overwrite
+```
+
+Split the source dataset:
+
+```bash
+python dataset/split_dataset.py \
+  --input_dir "assets/dataset/celeb_occluded/images" \
+  --output_dir "assets/dataset/source_splitted"
 ```
 
 ### 5.2. Split the Target Dataset
 
 ```bash
 python dataset/split_dataset.py \
-  --input_dir "assets/target" \
-  --output_dir "assets/target_splitted"
+  --input_dir "assets/dataset/celeb/CelebA-HQ-img" \
+  --output_dir "assets/dataset/target_splitted"
 ```
 
 ### 5.3. Process the Source Dataset
 
+# Validation
+
 ```bash
 python dataset/dataset_sharding.py \
-  --data_dir "assets/source_splitted" \
-  --target_dir "assets/source_processed/validation" \
+  --data_dir "assets/dataset/source_splitted/validation" \
+  --target_dir "assets/dataset/source_processed/validation" \
   --data_name "source_occluded" \
   --data_type "validation" \
   --num_shards 20 \
-  --max_images 20 &&
+  --max_images 20 
+```
+
+# Train
+
+```bash
 python dataset/dataset_sharding.py \
-  --data_dir "assets/source_splitted" \
-  --target_dir "assets/source_processed/train" \
+  --data_dir "assets/dataset/source_splitted/train" \
+  --target_dir "assets/dataset/source_processed/train" \
   --data_name "source_occluded" \
   --data_type "train" \
   --num_shards 20 \
@@ -115,17 +124,25 @@ python dataset/dataset_sharding.py \
 
 ### 5.4. Process the Target Dataset
 
+# Validation
+
 ```bash
 python dataset/dataset_sharding.py \
-  --data_dir "assets/target_splitted" \
-  --target_dir "assets/target_processed/validation" \
+  --data_dir "assets/dataset/target_splitted/validation" \
+  --target_dir "assets/dataset/target_processed/validation" \
   --data_name "target_occluded" \
   --data_type "validation" \
   --num_shards 20 \
-  --max_images 20 &&
+  --max_images 20 
+
+```
+
+# Train
+
+```bash
 python dataset/dataset_sharding.py \
-  --data_dir "assets/target_splitted" \
-  --target_dir "assets/target_processed/train" \
+  --data_dir "assets/dataset/target_splitted/train" \
+  --target_dir "assets/dataset/target_processed/train" \
   --data_name "target_occluded" \
   --data_type "train" \
   --num_shards 20 \
@@ -171,6 +188,17 @@ python train/train.py \
   --chkp_dir "checkpoints" \
   --log_name "facedancer_gpu_100_epochs_10000_iterations" \
   --load CHECKPOINT_ID
+```
+
+### 5.6. Testing
+
+```bash
+python test_image_swap_multi.py \
+ --swap_source "path/source/image" \
+ --img_path "path/target/image" \
+ --facedancer_path "path/facedancer/model.h5" \
+ --hand_task_path "models/hand_landmarker.task" \
+ --img_output "path/output"
 ```
 
 If automatic loading is unavailable, run any project command explicitly with:
